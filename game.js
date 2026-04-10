@@ -61,8 +61,8 @@ function render(html) {
 function showNameInput() {
     render(`
         <div class="card" style="text-align:center">
-            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
-            <p>Enter your agent name</p>
+            <h1>⚔️ SECRET ASSASSIN ⚔️</h1>
+            <p>Enter your name here</p>
             <input type="text" id="playerNameInput" placeholder="Agent Name" maxlength="20" autocomplete="off">
             <button id="confirmNameBtn">CONTINUE</button>
         </div>
@@ -201,9 +201,9 @@ function renderLobbyUI() {
             <h2>🔪 LOBBY: ${roomCode}</h2>
             <div id="lobbyPlayerList" class="player-list">Loading players...</div>
             <div class="sensor-status" id="sensorStatusArea"></div>
-            <button id="readySensorBtn">📡 ENABLE SENSORS & READY</button>
-            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (need 3 ready)</button>
-            <button id="leaveLobbyBtn">🚪 LEAVE</button>
+            <button id="readySensorBtn">📡 ENABLE SENSORS </button>
+            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (min. 3 players)</button>
+                <button id="leaveLobbyBtn">🚪QUIT </button>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
     `);
@@ -254,15 +254,15 @@ async function requestSensorsAndReady() {
         } else if (!micGranted && motionGranted) {
             sensorArea.innerHTML = `
                 <div style="text-align:center">
-                    <div style="color:#ff8888;">⚠️ Microphone access denied - LOUD_NOISE trigger won't work</div>
+                    <div style="color:#ff8888;">⚠️ Microphone access denied</div>
                     <button id="retryMicBtn" style="padding:0.3rem 1rem; font-size:0.8rem; margin-top:0.3rem;">🔁 Request Mic Again</button>
                 </div>
             `;
             document.getElementById("retryMicBtn")?.addEventListener("click", requestSensorsAndReady);
         } else if (micGranted && !motionGranted) {
-            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ Motion sensors not available - some triggers won\'t work</div>';
+            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ Motion sensors not available.</div>';
         } else {
-            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ No sensors available. Game will be difficult!</div>';
+            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ No sensors available.</div>';
         }
     }
     
@@ -416,8 +416,8 @@ function startGameHUD() {
                 <div id="targetName" class="target-name" style="font-size:1.5rem;">---</div>
                 <div id="missionText" class="mission-text" style="font-size:1.3rem; color:#ff8888; margin:0.5rem 0;">---</div>
                 <div style="font-size:0.9rem; margin-top:1rem; color:#aaa;">
-                    ⚠️ Your assassin is trying to make YOU perform YOUR trigger<br>
-                    Be careful what actions you take!
+                    ⚠️ Note that your assassin is also attempting to make you perform your trigger<br>
+                    Proceed cautiously!
                 </div>
             </div>
             <div class="debug-panel" id="debugLogPanel"></div>
@@ -463,19 +463,19 @@ async function updateActiveUI() {
 
 function getTriggerActionText(triggerId) {
     const map = {
-        "SHAKE_PHONE": "🔨 SHAKE their phone violently",
-        "PHONE_FACE_DOWN": "📱 Place their phone FACE DOWN",
-        "TILT_LEFT_RIGHT": "↔️ TILT their phone left and right rapidly",
-        "LOUD_NOISE": "📢 Make a LOUD noise (clap, shout)",
-        "SUSTAINED_MOVEMENT_3S": "🏃 Move their phone continuously for 3 seconds",
-        "PHONE_PICKED_UP": "⬆️ PICK UP their phone from a flat surface"
+        "SHAKE_PHONE": "🔨 have them SHAKE their phone violently",
+        "PHONE_FACE_DOWN": "📱 have them place their phone FACE DOWN",
+        "TILT_LEFT_RIGHT": "↔️ have them TILT their phone left and right rapidly",
+        "LOUD_NOISE": "📢 have them make a LOUD noise (clap, shout)",
+        "SUSTAINED_MOVEMENT_3S": "🏃 have them move their phone continuously for 3 seconds",
+        "PHONE_PICKED_UP": "⬆️ have them PICK UP their phone from a flat surface"
     };
     return map[triggerId] || "Complete your assassination mission";
 }
 
 function getTriggerDescription(triggerId) {
     const map = {
-        "SHAKE_PHONE": "shaking your phone violently",
+        "SHAKE_PHONE": "shake phone violently",
         "PHONE_FACE_DOWN": "placing your phone face down",
         "TILT_LEFT_RIGHT": "tilting your phone left and right",
         "LOUD_NOISE": "making a loud noise",
@@ -517,7 +517,7 @@ function subscribeActiveGame() {
             if (!aliveFlag && !isDeadLocally) {
                 isDeadLocally = true;
                 if (sensorManager) sensorManager.destroy();
-                showToast("☠️ YOU HAVE BEEN ELIMINATED! Your assassin made you perform your trigger.");
+                showToast("☠️ YOU HAVE BEEN ELIMINATED!");
             }
             myTarget = me.targetId;
             myAssassinTrigger = me.assassinTriggerId;
