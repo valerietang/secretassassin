@@ -1,3 +1,4 @@
+// TODO: REPLACE WITH YOUR FIREBASE CONFIG
 const firebaseConfig = {
     apiKey: "AIzaSyAMdGxGvZxWX9qCXyi4FROjkY7mYuD7P4w",
     authDomain: "secret-assassin-v1.firebaseapp.com",
@@ -18,6 +19,7 @@ const db = getFirestore(app);
 
 // Global variables
 let currentUser = null;
+let currentPlayerName = "";
 let roomCode = localStorage.getItem("assassin_room") || null;
 let roomRef = null;
 let playerRef = null;
@@ -27,15 +29,17 @@ let unsubMe = null;
 let currentGameStatus = "lobby";
 let aliveFlag = true;
 let myTarget = null;
-let myTrigger = null;
+let myAssassinTrigger = null;  // The trigger my assassin must use to eliminate ME
+let myTargetsTrigger = null;   // The trigger I need to make my target perform
 let timerInterval = null;
 let endTimestamp = null;
 let sensorManager = null;
 let pendingEliminationModal = false;
 let localTriggerCooldown = new Map();
 let isDeadLocally = false;
+let motionGranted = false;
+let micGranted = false;
 
-// Helper functions
 function debugLog(msg) {
     console.log("[ASSASSIN]", msg);
     const panel = document.getElementById("debugLogPanel");
@@ -54,44 +58,68 @@ function render(html) {
     if (root) root.innerHTML = html;
 }
 
+// Name input screen
+function showNameInput() {
+    render(`
+        <div class="card" style="text-align:center">
+            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
+            <p>Enter your agent name</p>
+            <input type="text" id="playerNameInput" placeholder="Agent Name" maxlength="20" autocomplete="off">
+            <button id="confirmNameBtn">CONTINUE</button>
+        </div>
+    `);
+    
+    document.getElementById("confirmNameBtn")?.addEventListener("click", function() {
+        const name = document.getElementById("playerNameInput").value.trim();
+        if (name.length === 0) {
+            showToast("Please enter a name");
+            return;
+        }
+        currentPlayerName = name;
+        showHome();
+    });
+    
+    document.getElementById("playerNameInput")?.addEventListener("keypress", function(e) {
+        if (e.key === "Enter") {
+            const name = e.target.value.trim();
+            if (name.length > 0) {
+                currentPlayerName = name;
+                showHome();
+            }
+        }
+    });
+}
+
 // Home screen
 function showHome() {
     render(`
         <div class="card" style="text-align:center">
-            <h1>⚔️ Secret Assassin ⚔️</h1>
-            <br>
-            <p>eliminate your target, stay alive</p>
-            <br>
+            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
+            <p>Welcome, ${currentPlayerName}!</p>
             <button id="createRoomBtn">🔪 CREATE ROOM</button>
-            <button id="joinRoomBtn">🔗 JOIN ROOM</button>
-            <input id="joinCodeInput" placeholder="Enter Room Code" style="display:none" />
+            <div class="join-container">
+                <input id="joinCodeInput" placeholder="Enter Room Code" maxlength="6" autocomplete="off">
+                <button id="joinRoomBtn">JOIN</button>
+            </div>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
     `);
     
     document.getElementById("createRoomBtn")?.addEventListener("click", createNewRoom);
-    const joinBtn = document.getElementById("joinRoomBtn");
-    const joinInput = document.getElementById("joinCodeInput");
-    joinBtn?.addEventListener("click", function() {
-        if (joinInput.style.display === "none") {
-            joinInput.style.display = "flex";
-        } else {
-            joinInput.style.display = "none";
-        }
+    document.getElementById("joinRoomBtn")?.addEventListener("click", function() {
+        const code = document.getElementById("joinCodeInput").value.trim().toUpperCase();
+        if (code) joinRoom(code);
     });
-    joinInput?.addEventListener("keypress", function(e) {
+    document.getElementById("joinCodeInput")?.addEventListener("keypress", function(e) {
         if (e.key === "Enter") {
-            joinRoom(joinInput.value.trim().toUpperCase());
+            const code = e.target.value.trim().toUpperCase();
+            if (code) joinRoom(code);
         }
     });
 }
 
-// Create room
 async function createNewRoom() {
-    if (!currentUser) {
-        showToast("Waiting for authentication...");
-        return;
-    }
+    if (!currentUser) return;
     
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
     let code = "";
@@ -117,7 +145,6 @@ async function createNewRoom() {
     }
 }
 
-// Join room
 async function joinRoom(code) {
     if (!code || !currentUser) return;
     
@@ -142,7 +169,7 @@ async function joinRoom(code) {
     
     if (!existing.exists()) {
         await setDoc(playerDoc, {
-            name: "Agent_" + Math.floor(Math.random() * 1000),
+            name: currentPlayerName,
             alive: true,
             isHost: (room.hostId === currentUser.uid),
             joinedAt: serverTimestamp(),
@@ -152,7 +179,7 @@ async function joinRoom(code) {
             connected: true,
             lastSeen: serverTimestamp(),
             targetId: null,
-            triggerId: null
+            assassinTriggerId: null  // The trigger that kills THIS player (known only to their assassin)
         });
     } else {
         await updateDoc(playerDoc, { connected: true, lastSeen: serverTimestamp() });
@@ -161,7 +188,6 @@ async function joinRoom(code) {
     goToLobby();
 }
 
-// Lobby
 function goToLobby() {
     if (!roomCode) return;
     renderLobbyUI();
@@ -173,8 +199,9 @@ function renderLobbyUI() {
         <div class="card">
             <h2>🔪 LOBBY: ${roomCode}</h2>
             <div id="lobbyPlayerList" class="player-list">Loading players...</div>
-            <button id="readySensorBtn">📡 ENABLE SENSORS </button>
-            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (min. 3 players)</button>
+            <div class="sensor-status" id="sensorStatusArea"></div>
+            <button id="readySensorBtn">📡 ENABLE SENSORS & READY</button>
+            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (need 3 ready)</button>
             <button id="leaveLobbyBtn">🚪 LEAVE</button>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
@@ -188,16 +215,22 @@ function renderLobbyUI() {
 async function requestSensorsAndReady() {
     if (!currentUser) return;
     
-    let motionGranted = false;
-    let micGranted = false;
+    motionGranted = false;
+    micGranted = false;
     
-    // Request motion permission for iOS
+    const sensorArea = document.getElementById("sensorStatusArea");
+    if (sensorArea) {
+        sensorArea.innerHTML = '<div style="text-align:center">⏳ Requesting permissions...</div>';
+    }
+    
+    // Request motion
     if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
         try {
             await DeviceOrientationEvent.requestPermission();
             motionGranted = true;
+            debugLog("Motion granted");
         } catch(e) {
-            debugLog("Motion denied");
+            debugLog("Motion denied: " + e.message);
         }
     } else {
         motionGranted = true;
@@ -208,8 +241,28 @@ async function requestSensorsAndReady() {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         micGranted = true;
         stream.getTracks().forEach(function(t) { t.stop(); });
+        debugLog("Mic granted");
     } catch(e) {
-        debugLog("Mic denied");
+        debugLog("Mic denied: " + e.message);
+    }
+    
+    // Update sensor status display
+    if (sensorArea) {
+        if (micGranted && motionGranted) {
+            sensorArea.innerHTML = '<div style="text-align:center; color:#0f0;">✅ All sensors ready!</div>';
+        } else if (!micGranted && motionGranted) {
+            sensorArea.innerHTML = `
+                <div style="text-align:center">
+                    <div style="color:#ff8888;">⚠️ Microphone access denied - LOUD_NOISE trigger won't work</div>
+                    <button id="retryMicBtn" style="padding:0.3rem 1rem; font-size:0.8rem; margin-top:0.3rem;">🔁 Request Mic Again</button>
+                </div>
+            `;
+            document.getElementById("retryMicBtn")?.addEventListener("click", requestSensorsAndReady);
+        } else if (micGranted && !motionGranted) {
+            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ Motion sensors not available - some triggers won\'t work</div>';
+        } else {
+            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ No sensors available. Game will be difficult!</div>';
+        }
     }
     
     const playerDoc = doc(collection(roomRef, "players"), currentUser.uid);
@@ -219,7 +272,7 @@ async function requestSensorsAndReady() {
         micEnabled: micGranted
     });
     
-    showToast("Sensors ready! ✅");
+    showToast("Ready! Waiting for host to start...");
 }
 
 function subscribeLobby() {
@@ -241,7 +294,11 @@ function subscribeLobby() {
                 html += '<span>' + p.name;
                 if (p.isHost) html += ' <span class="badge-host">HOST</span>';
                 html += '</span>';
-                html += '<span>' + (p.sensorReady ? '✅ READY' : '⏳') + '</span>';
+                if (p.sensorReady) {
+                    html += '<span class="badge-ready">✅ READY</span>';
+                } else {
+                    html += '<span class="badge-missing">⏳ PENDING</span>';
+                }
                 html += '</div>';
             }
             container.innerHTML = html;
@@ -249,8 +306,12 @@ function subscribeLobby() {
         
         const readyCount = players.filter(function(p) { return p.sensorReady; }).length;
         const startBtn = document.getElementById("startGameBtn");
-        if (startBtn && readyCount >= 3 && players.length >= 3) {
+        const isHost = players.some(function(p) { return p.id === currentUser.uid && p.isHost; });
+        
+        if (startBtn && readyCount >= 3 && players.length >= 3 && isHost) {
             startBtn.disabled = false;
+        } else if (startBtn && !isHost) {
+            startBtn.disabled = true;
         } else if (startBtn) {
             startBtn.disabled = true;
         }
@@ -259,7 +320,6 @@ function subscribeLobby() {
     });
 }
 
-// Start game
 async function startGameTransaction() {
     if (!roomRef) return;
     
@@ -277,7 +337,7 @@ async function startGameTransaction() {
         return;
     }
     
-    // Shuffle
+    // Shuffle players
     const shuffled = [];
     for (let i = 0; i < players.length; i++) {
         shuffled.push(players[i].id);
@@ -289,18 +349,19 @@ async function startGameTransaction() {
         shuffled[j] = temp;
     }
     
-    // Assign targets (closed loop)
+    // Assign targets (each player's target is the next in the loop)
     const targetMap = {};
     for (let i = 0; i < shuffled.length; i++) {
         targetMap[shuffled[i]] = shuffled[(i + 1) % shuffled.length];
     }
     
-    // Assign triggers
+    // Each player gets a trigger that their ASSASSIN must use to kill them
     const triggersList = ["SHAKE_PHONE", "PHONE_FACE_DOWN", "TILT_LEFT_RIGHT", "LOUD_NOISE", "SUSTAINED_MOVEMENT_3S", "PHONE_PICKED_UP"];
-    const triggerAssign = {};
+    const triggerAssignment = {};
     for (let i = 0; i < shuffled.length; i++) {
         const pid = shuffled[i];
-        triggerAssign[pid] = triggersList[Math.floor(Math.random() * triggersList.length)];
+        // Assign a random trigger that will kill THIS player
+        triggerAssignment[pid] = triggersList[Math.floor(Math.random() * triggersList.length)];
     }
     
     const startedAt = Timestamp.now();
@@ -320,17 +381,15 @@ async function startGameTransaction() {
         const playerDoc = doc(collection(roomRef, "players"), pid);
         batch.update(playerDoc, {
             targetId: targetMap[pid],
-            triggerId: triggerAssign[pid],
-            alive: true
+            assassinTriggerId: triggerAssignment[pid]  // The trigger that kills THIS player
         });
     }
     
     await batch.commit();
-    debugLog("Game started");
+    debugLog("Game started - Each player has a target and a secret trigger that kills them");
     enterActiveGame();
 }
 
-// Active game
 function enterActiveGame() {
     currentGameStatus = "active";
     startGameHUD();
@@ -352,9 +411,14 @@ function startGameHUD() {
                 <span id="statusBadge">🔪 ACTIVE</span>
             </div>
             <div class="mission-card">
-                <h3>🎯 TARGET</h3>
-                <div id="targetName">---</div>
-                <div id="missionText">loading...</div>
+                <h3>🎯 YOUR MISSION</h3>
+                <div style="font-size:1.2rem; margin:0.5rem 0;">Make your target perform:</div>
+                <div id="targetName" class="target-name" style="font-size:1.5rem;">---</div>
+                <div id="missionText" class="mission-text" style="font-size:1.3rem; color:#ff8888; margin:0.5rem 0;">---</div>
+                <div style="font-size:0.9rem; margin-top:1rem; color:#aaa;">
+                    ⚠️ Your assassin is trying to make YOU perform YOUR trigger<br>
+                    Be careful what actions you take!
+                </div>
             </div>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
@@ -371,7 +435,7 @@ async function updateActiveUI() {
         aliveFlag = data.alive;
         isDeadLocally = !aliveFlag;
         myTarget = data.targetId;
-        myTrigger = data.triggerId;
+        myAssassinTrigger = data.assassinTriggerId;  // The trigger that kills ME
         
         if (myTarget) {
             const targetSnap = await getDoc(doc(collection(roomRef, "players"), myTarget));
@@ -379,11 +443,21 @@ async function updateActiveUI() {
             if (targetElem) {
                 targetElem.innerHTML = targetSnap.exists() ? targetSnap.data().name : "unknown";
             }
+            
+            // I need to know my TARGET'S trigger (what kills them)
+            if (targetSnap.exists()) {
+                myTargetsTrigger = targetSnap.data().assassinTriggerId;
+                const missionElem = document.getElementById("missionText");
+                if (missionElem) {
+                    missionElem.innerHTML = getTriggerActionText(myTargetsTrigger);
+                }
+            }
         }
         
-        const missionElem = document.getElementById("missionText");
-        if (missionElem) {
-            missionElem.innerHTML = getMissionText(myTrigger);
+        // Show warning about your own trigger (but not what it is!)
+        const warningElem = document.getElementById("ownTriggerWarning");
+        if (warningElem) {
+            warningElem.innerHTML = "⚠️ Your assassin is trying to make you perform a SECRET action!";
         }
     }
     
@@ -394,16 +468,28 @@ async function updateActiveUI() {
     }
 }
 
-function getMissionText(triggerId) {
+function getTriggerActionText(triggerId) {
     const map = {
-        "SHAKE_PHONE": "SHAKE your phone violently",
-        "PHONE_FACE_DOWN": "Place phone FACE DOWN",
-        "TILT_LEFT_RIGHT": "TILT left/right sharply",
-        "LOUD_NOISE": "Make LOUD noise (clap/scream)",
-        "SUSTAINED_MOVEMENT_3S": "Move continuously 3 seconds",
-        "PHONE_PICKED_UP": "PICK UP phone"
+        "SHAKE_PHONE": "🔨 SHAKE their phone violently",
+        "PHONE_FACE_DOWN": "📱 Place their phone FACE DOWN",
+        "TILT_LEFT_RIGHT": "↔️ TILT their phone left and right rapidly",
+        "LOUD_NOISE": "📢 Make a LOUD noise (clap, shout)",
+        "SUSTAINED_MOVEMENT_3S": "🏃 Move their phone continuously for 3 seconds",
+        "PHONE_PICKED_UP": "⬆️ PICK UP their phone from a flat surface"
     };
-    return map[triggerId] || "eliminate target";
+    return map[triggerId] || "Complete your assassination mission";
+}
+
+function getTriggerDescription(triggerId) {
+    const map = {
+        "SHAKE_PHONE": "shaking your phone violently",
+        "PHONE_FACE_DOWN": "placing your phone face down",
+        "TILT_LEFT_RIGHT": "tilting your phone left and right",
+        "LOUD_NOISE": "making a loud noise",
+        "SUSTAINED_MOVEMENT_3S": "moving your phone continuously",
+        "PHONE_PICKED_UP": "picking up your phone"
+    };
+    return map[triggerId] || "a specific action";
 }
 
 function subscribeActiveGame() {
@@ -420,7 +506,7 @@ function subscribeActiveGame() {
         if (data && data.aliveCount !== undefined) {
             const aliveElem = document.getElementById("aliveCountHUD");
             if (aliveElem) {
-                aliveElem.innerHTML = "👥 " + data.aliveCount;
+                aliveElem.innerHTML = "👥 " + data.aliveCount + " alive";
             }
         }
         if (data && data.status === "ended") {
@@ -438,10 +524,10 @@ function subscribeActiveGame() {
             if (!aliveFlag && !isDeadLocally) {
                 isDeadLocally = true;
                 if (sensorManager) sensorManager.destroy();
-                showToast("☠️ YOU ARE DEAD");
+                showToast("☠️ YOU HAVE BEEN ELIMINATED! Your assassin made you perform your trigger.");
             }
             myTarget = me.targetId;
-            myTrigger = me.triggerId;
+            myAssassinTrigger = me.assassinTriggerId;
             updateActiveUI();
         }
     });
@@ -494,7 +580,6 @@ function endGameHandler(winnerIds) {
     });
 }
 
-// Leave room
 async function leaveRoom() {
     if (roomRef && currentUser) {
         const playerDoc = doc(collection(roomRef, "players"), currentUser.uid);
@@ -504,7 +589,7 @@ async function leaveRoom() {
     window.location.reload();
 }
 
-// Sensor Manager
+// Sensor Manager - Monitors for the player's OWN trigger (what kills them)
 class SensorManager {
     constructor() {
         this.active = true;
@@ -523,18 +608,20 @@ class SensorManager {
         window.addEventListener("devicemotion", this.handleMotion);
         window.addEventListener("deviceorientation", this.handleOrientation);
         
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.mediaStream = stream;
-            const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            const audioCtx = new AudioCtx();
-            const source = audioCtx.createMediaStreamSource(stream);
-            this.micAnalyser = audioCtx.createAnalyser();
-            source.connect(this.micAnalyser);
-            this.micAnalyser.fftSize = 256;
-            this.startMicCheck();
-        } catch(e) {
-            debugLog("Mic not available");
+        if (micGranted) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                this.mediaStream = stream;
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                const audioCtx = new AudioCtx();
+                const source = audioCtx.createMediaStreamSource(stream);
+                this.micAnalyser = audioCtx.createAnalyser();
+                source.connect(this.micAnalyser);
+                this.micAnalyser.fftSize = 256;
+                this.startMicCheck();
+            } catch(e) {
+                debugLog("Mic check failed: " + e.message);
+            }
         }
         
         document.addEventListener("visibilitychange", function() {
@@ -558,8 +645,9 @@ class SensorManager {
                 if (Math.abs(v) > max) max = Math.abs(v);
             }
             
-            if (max > 0.65 && myTrigger === "LOUD_NOISE") {
-                this.attemptElimination();
+            // Check if I performed my own trigger (my assassin's goal)
+            if (max > 0.65 && myAssassinTrigger === "LOUD_NOISE") {
+                this.attemptSelfElimination();
             }
             
             this.micInterval = requestAnimationFrame(checkMic.bind(this));
@@ -578,17 +666,18 @@ class SensorManager {
             (acc.z || 0) * (acc.z || 0)
         );
         
-        if (myTrigger === "SHAKE_PHONE" && mag > 28) {
-            this.attemptElimination();
+        // Check if I performed my own trigger
+        if (myAssassinTrigger === "SHAKE_PHONE" && mag > 28) {
+            this.attemptSelfElimination();
         }
         
-        if (myTrigger === "SUSTAINED_MOVEMENT_3S") {
+        if (myAssassinTrigger === "SUSTAINED_MOVEMENT_3S") {
             this.motionBuffer.push(Date.now());
             this.motionBuffer = this.motionBuffer.filter(function(t) {
                 return Date.now() - t < 3000;
             });
             if (this.motionBuffer.length > 8) {
-                this.attemptElimination();
+                this.attemptSelfElimination();
             }
         }
     }
@@ -599,39 +688,43 @@ class SensorManager {
         const beta = e.beta || 0;
         const gamma = e.gamma || 0;
         
-        if (myTrigger === "PHONE_FACE_DOWN" && Math.abs(beta) > 70) {
-            this.attemptElimination();
+        // Check if I performed my own trigger
+        if (myAssassinTrigger === "PHONE_FACE_DOWN" && Math.abs(beta) > 70) {
+            this.attemptSelfElimination();
         }
-        if (myTrigger === "TILT_LEFT_RIGHT" && Math.abs(gamma) > 45) {
-            this.attemptElimination();
+        if (myAssassinTrigger === "TILT_LEFT_RIGHT" && Math.abs(gamma) > 45) {
+            this.attemptSelfElimination();
         }
-        if (myTrigger === "PHONE_PICKED_UP" && beta < -20 && Math.abs(gamma) < 30) {
-            this.attemptElimination();
+        if (myAssassinTrigger === "PHONE_PICKED_UP" && beta < -20 && Math.abs(gamma) < 30) {
+            this.attemptSelfElimination();
         }
     }
     
-    attemptElimination() {
+    attemptSelfElimination() {
         if (!aliveFlag || pendingEliminationModal) return;
         
-        const cooldownTime = localTriggerCooldown.get(myTrigger);
+        const cooldownTime = localTriggerCooldown.get(myAssassinTrigger);
         if (cooldownTime && cooldownTime > Date.now()) return;
         
-        localTriggerCooldown.set(myTrigger, Date.now() + 10000);
+        localTriggerCooldown.set(myAssassinTrigger, Date.now() + 10000);
         this.showEliminationModal();
     }
     
     showEliminationModal() {
         pendingEliminationModal = true;
         
+        const triggerDescription = getTriggerDescription(myAssassinTrigger);
+        
         const modalDiv = document.createElement("div");
         modalDiv.className = "modal-full";
         modalDiv.innerHTML = `
             <div class="card">
-                <h2>🔪 ELIMINATION CONFIRM</h2>
-                <p>Were you eliminated by your assassin?</p>
+                <h2>🔪 ELIMINATION DETECTED!</h2>
+                <p>You just performed: <strong style="color:#ff8888;">${triggerDescription}</strong></p>
+                <p>This was your assassin's mission for you!</p>
                 <div class="btn-group">
-                    <button id="confirmYes">YES, I'm dead</button>
-                    <button id="confirmNo">NO, false alarm</button>
+                    <button id="confirmYes">✅ I've been eliminated</button>
+                    <button id="confirmNo">❌ This was a mistake</button>
                 </div>
             </div>
         `;
@@ -658,14 +751,21 @@ class SensorManager {
                 const victimSnap = await transaction.get(victimRef);
                 if (!victimSnap.exists() || victimSnap.data().alive === false) return;
                 
-                const assassinId = victimSnap.data().targetId;
-                const assassinRef = doc(collection(roomRef, "players"), assassinId);
-                const myTargetId = victimSnap.data().targetId;
+                // Find who has ME as their target (my assassin)
+                const playersQuery = await getDocs(collection(roomRef, "players"));
+                let assassinId = null;
+                playersQuery.forEach(function(d) {
+                    if (d.data().targetId === currentUser.uid && d.data().alive === true) {
+                        assassinId = d.id;
+                    }
+                });
                 
                 transaction.update(victimRef, { alive: false });
                 
-                const assassinSnap = await transaction.get(assassinRef);
-                if (assassinSnap.exists() && assassinSnap.data().alive === true) {
+                // Give my target to my assassin
+                if (assassinId) {
+                    const myTargetId = victimSnap.data().targetId;
+                    const assassinRef = doc(collection(roomRef, "players"), assassinId);
                     transaction.update(assassinRef, { targetId: myTargetId });
                 }
                 
@@ -679,7 +779,7 @@ class SensorManager {
         
         aliveFlag = false;
         if (sensorManager) sensorManager.destroy();
-        showToast("You have been eliminated.");
+        showToast("☠️ YOU HAVE BEEN ELIMINATED!");
     }
     
     destroy() {
@@ -718,21 +818,35 @@ onAuthStateChanged(auth, function(user) {
     currentUser = user;
     debugLog("Logged in: " + user.uid);
     
-    if (roomCode) {
-        roomRef = doc(db, "rooms", roomCode);
-        getDoc(roomRef).then(function(snap) {
-            if (snap.exists() && snap.data().status === "active") {
-                enterActiveGame();
-            } else if (snap.exists() && snap.data().status === "lobby") {
-                goToLobby();
-            } else {
-                showHome();
-            }
-        }).catch(function(e) {
-            debugLog("Error: " + e.message);
-            showHome();
-        });
-    } else {
+    // Check if user has a name saved
+    const savedName = localStorage.getItem("assassin_name");
+    if (savedName) {
+        currentPlayerName = savedName;
         showHome();
+    } else {
+        showNameInput();
     }
 });
+
+// Save name when entered
+function showNameInput() {
+    render(`
+        <div class="card" style="text-align:center">
+            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
+            <p>Enter your agent name</p>
+            <input type="text" id="playerNameInput" placeholder="Agent Name" maxlength="20" autocomplete="off">
+            <button id="confirmNameBtn">CONTINUE</button>
+        </div>
+    `);
+    
+    document.getElementById("confirmNameBtn")?.addEventListener("click", function() {
+        const name = document.getElementById("playerNameInput").value.trim();
+        if (name.length === 0) {
+            showToast("Please enter a name");
+            return;
+        }
+        currentPlayerName = name;
+        localStorage.setItem("assassin_name", name);
+        showHome();
+    });
+}
