@@ -58,8 +58,10 @@ function render(html) {
 function showHome() {
     render(`
         <div class="card" style="text-align:center">
-            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
-            <p>sensor · deception · contract</p>
+            <h1>⚔️ Secret Assassin ⚔️</h1>
+            <br>
+            <p>eliminate your target, stay alive</p>
+            <br>
             <button id="createRoomBtn">🔪 CREATE ROOM</button>
             <button id="joinRoomBtn">🔗 JOIN ROOM</button>
             <input id="joinCodeInput" placeholder="Enter Room Code" style="display:none" />
