@@ -173,8 +173,8 @@ function renderLobbyUI() {
         <div class="card">
             <h2>🔪 LOBBY: ${roomCode}</h2>
             <div id="lobbyPlayerList" class="player-list">Loading players...</div>
-            <button id="readySensorBtn">📡 ENABLE SENSORS & READY</button>
-            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (need 3 ready)</button>
+            <button id="readySensorBtn">📡 ENABLE SENSORS </button>
+            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (min. 3 players)</button>
             <button id="leaveLobbyBtn">🚪 LEAVE</button>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
