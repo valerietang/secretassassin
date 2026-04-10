@@ -1,10 +1,10 @@
 const firebaseConfig = {
-  apiKey: "AIzaSyAMdGxGvZxWX9qCXyi4FROjkY7mYuD7P4w",
-  authDomain: "secret-assassin-v1.firebaseapp.com",
-  projectId: "secret-assassin-v1",
-  storageBucket: "secret-assassin-v1.firebasestorage.app",
-  messagingSenderId: "946220914680",
-  appId: "1:946220914680:web:11ac26113052d2e182680d"
+    apiKey: "AIzaSyAMdGxGvZxWX9qCXyi4FROjkY7mYuD7P4w",
+    authDomain: "secret-assassin-v1.firebaseapp.com",
+    projectId: "secret-assassin-v1",
+    storageBucket: "secret-assassin-v1.firebasestorage.app",
+    messagingSenderId: "946220914680",
+    appId: "1:946220914680:web:11ac26113052d2e182680d"
 };
 
 import { initializeApp } from "firebase/app";
@@ -16,46 +16,28 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// Global State
-let currentUser = null;
-let roomCode = localStorage.getItem("assassin_room") || null;
-let playerRef = null;
-let roomRef = null;
-let unsubPlayers = null, unsubRoom = null;
-let currentGameStatus = "lobby";
-let aliveFlag = true;
-let myTarget = null;
-let myTrigger = null;
-let timerInterval = null;
-let endTimestamp = null;
-let sensorManager = null;
-let pendingEliminationModal = false;
-let localTriggerCooldown = new Map();
-let isDeadLocally = false;
+// Debug helper
+function debugLog(msg, isError = false) {
+    console.log(`[ASSASSIN] ${msg}`);
+    const panel = document.getElementById("debugLogPanel");
+    if (panel) {
+        panel.innerHTML += `> ${new Date().toLocaleTimeString()} ${msg}<br>`;
+        panel.scrollTop = panel.scrollHeight;
+    }
+}
+
+function showToast(msg) { 
+    alert(msg); 
+}
 
 // DOM Helper
 const root = document.getElementById("appRoot");
 
 function render(html) { 
     if (root) root.innerHTML = html; 
-    else console.error("Root element not found");
-}
-
-function showToast(msg, isError = false) { 
-    alert(msg); 
-}
-
-function debugLog(msg) { 
-    console.log(`[ASSASSIN] ${msg}`); 
-    const panel = document.getElementById("debugLogPanel"); 
-    if(panel) panel.innerHTML += `> ${new Date().toLocaleTimeString()} ${msg}<br>`; 
 }
 
 // UI Screens
-function showLoading() {
-    render('<div class="loading">🔪 Connecting to Firebase...<br>Initializing Assassin Protocol</div>');
-}
-
 function showHome() {
     render(`
         <div class="card" style="text-align:center">
@@ -77,8 +59,28 @@ function showHome() {
     joinInput?.addEventListener("keypress", e => e.key === "Enter" && joinRoom(joinInput.value.trim().toUpperCase()));
 }
 
+// Global State
+let currentUser = null;
+let roomCode = localStorage.getItem("assassin_room") || null;
+let playerRef = null;
+let roomRef = null;
+let unsubPlayers = null, unsubRoom = null, unsubMe = null;
+let currentGameStatus = "lobby";
+let aliveFlag = true;
+let myTarget = null;
+let myTrigger = null;
+let timerInterval = null;
+let endTimestamp = null;
+let sensorManager = null;
+let pendingEliminationModal = false;
+let localTriggerCooldown = new Map();
+let isDeadLocally = false;
+
 async function createNewRoom() {
-    if(!currentUser) return;
+    if(!currentUser) {
+        showToast("Waiting for authentication...");
+        return;
+    }
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
     let code = "";
     for(let i=0;i<6;i++) code += chars[Math.floor(Math.random()*chars.length)];
@@ -90,16 +92,17 @@ async function createNewRoom() {
         winnerIds: []
     };
     try {
+        debugLog("Creating room: " + code);
         await setDoc(doc(db, "rooms", code), roomData);
         await joinRoom(code);
     } catch(e) { 
-        console.error(e); 
+        debugLog("Error creating room: " + e.message, true);
         showToast("Error creating room: " + e.message); 
     }
 }
 
 async function joinRoom(code) {
-    if(!code) return;
+    if(!code || !currentUser) return;
     roomCode = code;
     localStorage.setItem("assassin_room", code);
     roomRef = doc(db, "rooms", code);
@@ -145,10 +148,9 @@ function renderLobbyUI() {
     render(`
         <div class="card">
             <h2>🔪 LOBBY: ${roomCode}</h2>
-            <div id="lobbyPlayerList" class="player-list"></div>
-            <div id="sensorSetupPanel"></div>
+            <div id="lobbyPlayerList" class="player-list">Loading players...</div>
             <button id="readySensorBtn">📡 ENABLE SENSORS & READY</button>
-            <button id="startGameBtn" style="background:#0f3b2c">▶ START GAME (HOST)</button>
+            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (need 3 ready)</button>
             <button id="leaveLobbyBtn">🚪 LEAVE</button>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
@@ -177,7 +179,7 @@ async function requestSensorsAndReady() {
             try { 
                 await DeviceOrientationEvent.requestPermission(); 
                 motionGranted = true; 
-            } catch(e) { console.warn("Motion denied"); }
+            } catch(e) { debugLog("Motion permission denied"); }
         } else { 
             motionGranted = true; 
         }
@@ -188,7 +190,7 @@ async function requestSensorsAndReady() {
         micGranted = true;
         stream.getTracks().forEach(t=>t.stop());
     } catch(e) { 
-        console.warn("Mic denied"); 
+        debugLog("Mic permission denied");
     }
     
     await updateDoc(doc(roomRef, "players", currentUser.uid), { 
@@ -241,7 +243,6 @@ async function startGameTransaction() {
         return; 
     }
     
-    // Shuffle players for target loop
     const shuffled = players.map(p=>p.id);
     for(let i=shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random()*(i+1));
@@ -302,7 +303,6 @@ function startGameHUD() {
                 <div id="targetName">---</div>
                 <div id="missionText">loading...</div>
             </div>
-            <div id="sensorIcons" style="display:flex; gap:10px; justify-content:center; margin:10px">⚡⚡⚡</div>
             <div class="debug-panel" id="debugLogPanel"></div>
         </div>
     `);
@@ -345,7 +345,7 @@ function getTriggerMeta(triggerId) {
 
 function subscribeActiveGame() {
     if(unsubRoom) unsubRoom();
-    unsubRoom = onSnapshot(roomRef, async (snap) => {
+    unsubRoom = onSnapshot(roomRef, (snap) => {
         const data = snap.data();
         if(data && data.endTime && data.endTime.toMillis) {
             endTimestamp = data.endTime.toMillis();
@@ -354,7 +354,8 @@ function subscribeActiveGame() {
             timerInterval = setInterval(updateTimerDisplay, 1000);
         }
         if(data && data.aliveCount !== undefined) {
-            document.getElementById("aliveCountHUD").innerHTML = `👥 ${data.aliveCount}`;
+            const aliveElem = document.getElementById("aliveCountHUD");
+            if(aliveElem) aliveElem.innerHTML = `👥 ${data.aliveCount}`;
         }
         if(data && data.status === "ended") {
             endGameHandler(data.winnerIds);
@@ -362,7 +363,8 @@ function subscribeActiveGame() {
     });
     
     playerRef = doc(roomRef, "players", currentUser.uid);
-    onSnapshot(playerRef, (snap) => {
+    if(unsubMe) unsubMe();
+    unsubMe = onSnapshot(playerRef, (snap) => {
         if(snap.exists()){
             const me = snap.data();
             aliveFlag = me.alive;
@@ -401,7 +403,6 @@ function endGameHandler(winnerIds) {
     if(timerInterval) clearInterval(timerInterval);
     if(sensorManager) sensorManager.destroy();
     currentGameStatus = "ended";
-    const winnerText = winnerIds?.length ? `${winnerIds.length} winner(s)` : "nobody";
     render(`<div class="card"><h1>🏆 GAME OVER</h1><p>Game ended</p><button id="backHome">🏠 Main Menu</button></div>`);
     document.getElementById("backHome")?.addEventListener("click",()=>{ 
         localStorage.removeItem("assassin_room"); 
@@ -420,6 +421,7 @@ class SensorManager {
         this.mediaStream = null;
         this.handleMotion = this.handleMotion.bind(this);
         this.handleOrientation = this.handleOrientation.bind(this);
+        this.micCheckInterval = null;
     }
     
     async init() {
@@ -429,13 +431,13 @@ class SensorManager {
         try { 
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); 
             this.mediaStream = stream; 
-            const audioCtx = new AudioContext(); 
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
             const source = audioCtx.createMediaStreamSource(stream); 
             this.micAnalyser = audioCtx.createAnalyser(); 
             source.connect(this.micAnalyser); 
             this.micAnalyser.fftSize = 256; 
             this.startMicCheck(); 
-        } catch(e) {}
+        } catch(e) { debugLog("Mic not available"); }
         
         document.addEventListener("visibilitychange", () => { 
             if(document.hidden) this.active = false; 
@@ -454,7 +456,7 @@ class SensorManager {
                 max = Math.max(max, Math.abs(v));
             }
             if(max > 0.65 && myTrigger === "LOUD_NOISE") this.attemptElimination(); 
-            requestAnimationFrame(checkMic);
+            this.micCheckInterval = requestAnimationFrame(checkMic);
         };
         checkMic();
     }
@@ -530,6 +532,7 @@ class SensorManager {
     }
     
     destroy() {
+        if(this.micCheckInterval) cancelAnimationFrame(this.micCheckInterval);
         window.removeEventListener("devicemotion", this.handleMotion);
         window.removeEventListener("deviceorientation", this.handleOrientation);
         if(this.mediaStream) this.mediaStream.getTracks().forEach(t => t.stop());
@@ -546,15 +549,28 @@ async function leaveRoom() {
 }
 
 // Initialize App
-showLoading();
+debugLog("App starting...");
 onAuthStateChanged(auth, async (user) => {
     if(!user) { 
+        debugLog("No user, signing in anonymously...");
         try {
             await signInAnonymously(auth);
+            debugLog("Anonymous sign-in successful!");
         } catch(e) {
-            console.error("Auth failed:", e);
-            showToast("Firebase auth failed. Check your config.");
-            render('<div class="card"><h2>⚠️ Firebase Error</h2><p>Check console for details. Make sure your firebaseConfig is correct.</p><button onclick="location.reload()">Retry</button></div>');
+            debugLog("Auth failed: " + e.message, true);
+            render(`
+                <div class="card" style="text-align:center; border-color: #ff3333;">
+                    <h2>⚠️ Firebase Error</h2>
+                    <p>${e.message}</p>
+                    <p>Make sure:</p>
+                    <ul>
+                        <li>Firebase config is correct</li>
+                        <li>Anonymous Auth is ENABLED in Firebase Console</li>
+                        <li>Firestore is created</li>
+                    </ul>
+                    <button onclick="location.reload()">Retry</button>
+                </div>
+            `);
         }
         return; 
     }
