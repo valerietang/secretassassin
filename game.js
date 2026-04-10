@@ -1,4 +1,3 @@
-// TODO: REPLACE WITH YOUR FIREBASE CONFIG
 const firebaseConfig = {
     apiKey: "AIzaSyAMdGxGvZxWX9qCXyi4FROjkY7mYuD7P4w",
     authDomain: "secret-assassin-v1.firebaseapp.com",
@@ -76,6 +75,7 @@ function showNameInput() {
             return;
         }
         currentPlayerName = name;
+        localStorage.setItem("assassin_name", name);
         showHome();
     });
     
@@ -84,6 +84,7 @@ function showNameInput() {
             const name = e.target.value.trim();
             if (name.length > 0) {
                 currentPlayerName = name;
+                localStorage.setItem("assassin_name", name);
                 showHome();
             }
         }
@@ -179,7 +180,7 @@ async function joinRoom(code) {
             connected: true,
             lastSeen: serverTimestamp(),
             targetId: null,
-            assassinTriggerId: null  // The trigger that kills THIS player (known only to their assassin)
+            assassinTriggerId: null
         });
     } else {
         await updateDoc(playerDoc, { connected: true, lastSeen: serverTimestamp() });
@@ -360,7 +361,6 @@ async function startGameTransaction() {
     const triggerAssignment = {};
     for (let i = 0; i < shuffled.length; i++) {
         const pid = shuffled[i];
-        // Assign a random trigger that will kill THIS player
         triggerAssignment[pid] = triggersList[Math.floor(Math.random() * triggersList.length)];
     }
     
@@ -381,12 +381,12 @@ async function startGameTransaction() {
         const playerDoc = doc(collection(roomRef, "players"), pid);
         batch.update(playerDoc, {
             targetId: targetMap[pid],
-            assassinTriggerId: triggerAssignment[pid]  // The trigger that kills THIS player
+            assassinTriggerId: triggerAssignment[pid]
         });
     }
     
     await batch.commit();
-    debugLog("Game started - Each player has a target and a secret trigger that kills them");
+    debugLog("Game started");
     enterActiveGame();
 }
 
@@ -435,7 +435,7 @@ async function updateActiveUI() {
         aliveFlag = data.alive;
         isDeadLocally = !aliveFlag;
         myTarget = data.targetId;
-        myAssassinTrigger = data.assassinTriggerId;  // The trigger that kills ME
+        myAssassinTrigger = data.assassinTriggerId;
         
         if (myTarget) {
             const targetSnap = await getDoc(doc(collection(roomRef, "players"), myTarget));
@@ -444,7 +444,6 @@ async function updateActiveUI() {
                 targetElem.innerHTML = targetSnap.exists() ? targetSnap.data().name : "unknown";
             }
             
-            // I need to know my TARGET'S trigger (what kills them)
             if (targetSnap.exists()) {
                 myTargetsTrigger = targetSnap.data().assassinTriggerId;
                 const missionElem = document.getElementById("missionText");
@@ -452,12 +451,6 @@ async function updateActiveUI() {
                     missionElem.innerHTML = getTriggerActionText(myTargetsTrigger);
                 }
             }
-        }
-        
-        // Show warning about your own trigger (but not what it is!)
-        const warningElem = document.getElementById("ownTriggerWarning");
-        if (warningElem) {
-            warningElem.innerHTML = "⚠️ Your assassin is trying to make you perform a SECRET action!";
         }
     }
     
@@ -589,7 +582,7 @@ async function leaveRoom() {
     window.location.reload();
 }
 
-// Sensor Manager - Monitors for the player's OWN trigger (what kills them)
+// Sensor Manager
 class SensorManager {
     constructor() {
         this.active = true;
@@ -645,7 +638,6 @@ class SensorManager {
                 if (Math.abs(v) > max) max = Math.abs(v);
             }
             
-            // Check if I performed my own trigger (my assassin's goal)
             if (max > 0.65 && myAssassinTrigger === "LOUD_NOISE") {
                 this.attemptSelfElimination();
             }
@@ -666,7 +658,6 @@ class SensorManager {
             (acc.z || 0) * (acc.z || 0)
         );
         
-        // Check if I performed my own trigger
         if (myAssassinTrigger === "SHAKE_PHONE" && mag > 28) {
             this.attemptSelfElimination();
         }
@@ -688,7 +679,6 @@ class SensorManager {
         const beta = e.beta || 0;
         const gamma = e.gamma || 0;
         
-        // Check if I performed my own trigger
         if (myAssassinTrigger === "PHONE_FACE_DOWN" && Math.abs(beta) > 70) {
             this.attemptSelfElimination();
         }
@@ -762,7 +752,6 @@ class SensorManager {
                 
                 transaction.update(victimRef, { alive: false });
                 
-                // Give my target to my assassin
                 if (assassinId) {
                     const myTargetId = victimSnap.data().targetId;
                     const assassinRef = doc(collection(roomRef, "players"), assassinId);
@@ -827,26 +816,3 @@ onAuthStateChanged(auth, function(user) {
         showNameInput();
     }
 });
-
-// Save name when entered
-function showNameInput() {
-    render(`
-        <div class="card" style="text-align:center">
-            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
-            <p>Enter your agent name</p>
-            <input type="text" id="playerNameInput" placeholder="Agent Name" maxlength="20" autocomplete="off">
-            <button id="confirmNameBtn">CONTINUE</button>
-        </div>
-    `);
-    
-    document.getElementById("confirmNameBtn")?.addEventListener("click", function() {
-        const name = document.getElementById("playerNameInput").value.trim();
-        if (name.length === 0) {
-            showToast("Please enter a name");
-            return;
-        }
-        currentPlayerName = name;
-        localStorage.setItem("assassin_name", name);
-        showHome();
-    });
-}
