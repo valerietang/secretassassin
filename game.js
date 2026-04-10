@@ -95,7 +95,7 @@ function showNameInput() {
 function showHome() {
     render(`
         <div class="card" style="text-align:center">
-            <h1>⚔️ NEON ASSASSIN ⚔️</h1>
+            <h1>⚔️ SECRET ASSASSIN ⚔️</h1>
             <p>Welcome, ${currentPlayerName}!</p>
             <button id="createRoomBtn">🔪 CREATE ROOM</button>
             <div class="join-container">
@@ -334,7 +334,7 @@ async function startGameTransaction() {
     });
     
     if (players.length < 3) {
-        showToast("Need 3 ready players");
+        showToast("Min. 3 players required");
         return;
     }
     
@@ -476,11 +476,11 @@ function getTriggerActionText(triggerId) {
 function getTriggerDescription(triggerId) {
     const map = {
         "SHAKE_PHONE": "shake phone violently",
-        "PHONE_FACE_DOWN": "placing your phone face down",
-        "TILT_LEFT_RIGHT": "tilting your phone left and right",
+        "PHONE_FACE_DOWN": "phone face down",
+        "TILT_LEFT_RIGHT": "tilting phone left and right",
         "LOUD_NOISE": "making a loud noise",
-        "SUSTAINED_MOVEMENT_3S": "moving your phone continuously",
-        "PHONE_PICKED_UP": "picking up your phone"
+        "SUSTAINED_MOVEMENT_3S": "moving phone continuously",
+        "PHONE_PICKED_UP": "picking up phone"
     };
     return map[triggerId] || "a specific action";
 }
