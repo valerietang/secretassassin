@@ -1,3 +1,11 @@
+// ============================================================
+// SHADOWMARK — Core Game Logic
+// ============================================================
+
+const DEBUG_MODE = false; // Set true to show debug panel
+
+// ——— FIREBASE CONFIG ———
+// Replace with your Firebase project config
 const firebaseConfig = {
     apiKey: "AIzaSyAMdGxGvZxWX9qCXyi4FROjkY7mYuD7P4w",
     authDomain: "secret-assassin-v1.firebaseapp.com",
@@ -7,19 +15,17 @@ const firebaseConfig = {
     appId: "1:946220914680:web:11ac26113052d2e182680d"
 };
 
-import { initializeApp } from "firebase/app";
-import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
-import { getFirestore, doc, setDoc, getDoc, updateDoc, onSnapshot, collection, runTransaction, query, where, getDocs, writeBatch, serverTimestamp, Timestamp } from "firebase/firestore";
+// ============================================================
+// GLOBALS
+// ============================================================
 
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
+let FB = null; // Firebase SDK (loaded async)
+let db = null;
+let auth = null;
 
-// Global variables
 let currentUser = null;
 let currentPlayerName = "";
-let roomCode = localStorage.getItem("assassin_room") || null;
+let roomCode = localStorage.getItem("shadowmark_room") || null;
 let roomRef = null;
 let playerRef = null;
 let unsubPlayers = null;
@@ -27,29 +33,73 @@ let unsubRoom = null;
 let unsubMe = null;
 let currentGameStatus = "lobby";
 let aliveFlag = true;
+let isDeadLocally = false;
 let myTarget = null;
-let myAssassinTrigger = null;  // The trigger my assassin must use to eliminate ME
-let myTargetsTrigger = null;   // The trigger I need to make my target perform
+let myAssassinId = null;
+let myAssassinTrigger = null;
+let myTargetsTrigger = null;
 let timerInterval = null;
 let endTimestamp = null;
 let sensorManager = null;
-let pendingEliminationModal = false;
-let localTriggerCooldown = new Map();
-let isDeadLocally = false;
 let motionGranted = false;
 let micGranted = false;
+let localTriggerCooldown = new Map();
+
+// ============================================================
+// TRIGGER DEFINITIONS
+// ============================================================
+
+const TRIGGERS = {
+    SHAKE_PHONE: {
+        id: "SHAKE_PHONE",
+        action: "shake their phone violently",
+        prompt: "Shake it. Hard.",
+        hud: "make them shake their phone"
+    },
+    PHONE_FACE_DOWN: {
+        id: "PHONE_FACE_DOWN",
+        action: "place their phone face down",
+        prompt: "Lay it face down on a surface.",
+        hud: "get them to place their phone face down"
+    },
+    FLIP_UPSIDE_DOWN: {
+        id: "FLIP_UPSIDE_DOWN",
+        action: "flip their phone upside down",
+        prompt: "Flip your phone completely upside down.",
+        hud: "make them flip their phone upside down"
+    },
+    HOLD_FLAT_3S: {
+        id: "HOLD_FLAT_3S",
+        action: "hold their phone completely flat for 3 seconds",
+        prompt: "Hold it flat. Perfectly level. Don't move.",
+        hud: "get them to hold their phone flat for 3 seconds"
+    }
+};
+
+const TRIGGER_KEYS = Object.keys(TRIGGERS);
+
+// ============================================================
+// UTILITIES
+// ============================================================
 
 function debugLog(msg) {
-    console.log("[ASSASSIN]", msg);
+    if (!DEBUG_MODE) return;
+    console.log("[SHADOWMARK]", msg);
     const panel = document.getElementById("debugLogPanel");
     if (panel) {
-        panel.innerHTML += "> " + new Date().toLocaleTimeString() + " " + msg + "<br>";
+        panel.innerHTML += `> ${new Date().toLocaleTimeString()} ${msg}<br>`;
         panel.scrollTop = panel.scrollHeight;
     }
 }
 
 function showToast(msg) {
-    alert(msg);
+    const container = document.getElementById("toastContainer");
+    if (!container) return;
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.textContent = msg;
+    container.appendChild(toast);
+    setTimeout(() => toast.remove(), 3200);
 }
 
 function render(html) {
@@ -57,61 +107,88 @@ function render(html) {
     if (root) root.innerHTML = html;
 }
 
-// Name input screen
-function showNameInput() {
-    render(`
-        <div class="card" style="text-align:center">
-            <h1>⚔️ SECRET ASSASSIN ⚔️</h1>
-            <p>Enter your name here</p>
-            <input type="text" id="playerNameInput" placeholder="Agent Name" maxlength="20" autocomplete="off">
-            <button id="confirmNameBtn">CONTINUE</button>
-        </div>
-    `);
-    
-    document.getElementById("confirmNameBtn")?.addEventListener("click", function() {
-        const name = document.getElementById("playerNameInput").value.trim();
-        if (name.length === 0) {
-            showToast("Please enter a name");
-            return;
-        }
-        currentPlayerName = name;
-        localStorage.setItem("assassin_name", name);
-        showHome();
-    });
-    
-    document.getElementById("playerNameInput")?.addEventListener("keypress", function(e) {
-        if (e.key === "Enter") {
-            const name = e.target.value.trim();
-            if (name.length > 0) {
-                currentPlayerName = name;
-                localStorage.setItem("assassin_name", name);
-                showHome();
-            }
-        }
-    });
+function debugPanel() {
+    return DEBUG_MODE ? `<div class="debug-panel" id="debugLogPanel"></div>` : '';
 }
 
-// Home screen
-function showHome() {
+// ============================================================
+// SCREENS
+// ============================================================
+
+function showNameInput() {
     render(`
-        <div class="card" style="text-align:center">
-            <h1>⚔️ SECRET ASSASSIN ⚔️</h1>
-            <p>Welcome, ${currentPlayerName}!</p>
-            <button id="createRoomBtn">🔪 CREATE ROOM</button>
-            <div class="join-container">
-                <input id="joinCodeInput" placeholder="Enter Room Code" maxlength="6" autocomplete="off">
-                <button id="joinRoomBtn">JOIN</button>
+        <div class="screen fade-up">
+            <div class="screen-header" style="padding-top: 4rem;">
+                <div class="wordmark">SHADOWMARK</div>
+                <span class="wordmark-sub">covert elimination protocol</span>
             </div>
-            <div class="debug-panel" id="debugLogPanel"></div>
+
+            <p class="flavor-text fade-up fade-up-delay-1">
+                Every agent needs a name.<br>Choose one you won't mind being remembered by.
+            </p>
+
+            <div class="input-group fade-up fade-up-delay-2">
+                <span class="label">Codename</span>
+                <input type="text" id="playerNameInput" placeholder="e.g. GHOST" maxlength="20" autocomplete="off">
+            </div>
+
+            <div class="spacer"></div>
+            <button class="btn btn-primary fade-up fade-up-delay-3" id="confirmNameBtn">ENTER THE FIELD</button>
         </div>
     `);
-    
+
+    const input = document.getElementById("playerNameInput");
+    const btn = document.getElementById("confirmNameBtn");
+
+    btn?.addEventListener("click", confirmName);
+    input?.addEventListener("keypress", e => { if (e.key === "Enter") confirmName(); });
+    input?.focus();
+}
+
+function confirmName() {
+    const name = document.getElementById("playerNameInput")?.value.trim().toUpperCase();
+    if (!name) { showToast("You need a name, agent."); return; }
+    currentPlayerName = name;
+    localStorage.setItem("shadowmark_name", name);
+    showHome();
+}
+
+function showHome() {
+    render(`
+        <div class="screen fade-up">
+            <div class="screen-header" style="padding-top: 3rem;">
+                <div class="wordmark">SHADOWMARK</div>
+                <span class="wordmark-sub">welcome back, ${currentPlayerName}</span>
+            </div>
+
+            <p class="flavor-text fade-up fade-up-delay-1">
+                Your city. Your rules.<br>Someone already has your name on a list.
+            </p>
+
+            <div class="fade-up fade-up-delay-2">
+                <button class="btn btn-primary" id="createRoomBtn">🔪 OPEN A SAFEHOUSE</button>
+            </div>
+
+            <div class="divider fade-up fade-up-delay-3">or infiltrate</div>
+
+            <div class="join-row fade-up fade-up-delay-3">
+                <div style="flex:1;">
+                    <span class="label">Room Code</span>
+                    <input type="text" id="joinCodeInput" placeholder="X7K2MN" maxlength="6" autocomplete="off">
+                </div>
+                <button class="btn btn-secondary" id="joinRoomBtn">GO</button>
+            </div>
+
+            ${debugPanel()}
+        </div>
+    `);
+
     document.getElementById("createRoomBtn")?.addEventListener("click", createNewRoom);
-    document.getElementById("joinRoomBtn")?.addEventListener("click", function() {
-        const code = document.getElementById("joinCodeInput").value.trim().toUpperCase();
+    document.getElementById("joinRoomBtn")?.addEventListener("click", () => {
+        const code = document.getElementById("joinCodeInput")?.value.trim().toUpperCase();
         if (code) joinRoom(code);
     });
-    document.getElementById("joinCodeInput")?.addEventListener("keypress", function(e) {
+    document.getElementById("joinCodeInput")?.addEventListener("keypress", e => {
         if (e.key === "Enter") {
             const code = e.target.value.trim().toUpperCase();
             if (code) joinRoom(code);
@@ -119,57 +196,66 @@ function showHome() {
     });
 }
 
+// ============================================================
+// ROOM CREATION & JOINING
+// ============================================================
+
 async function createNewRoom() {
     if (!currentUser) return;
-    
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
     let code = "";
-    for (let i = 0; i < 6; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    
-    const roomData = {
-        hostId: currentUser.uid,
-        status: "lobby",
-        createdAt: serverTimestamp(),
-        aliveCount: 0,
-        winnerIds: []
-    };
-    
+    for (let i = 0; i < 6; i++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+
+    const { doc, setDoc, collection, serverTimestamp } = FB;
+
     try {
         debugLog("Creating room: " + code);
-        await setDoc(doc(db, "rooms", code), roomData);
+        await setDoc(doc(db, "rooms", code), {
+            hostId: currentUser.uid,
+            status: "lobby",
+            createdAt: serverTimestamp(),
+            aliveCount: 0,
+            winnerIds: []
+        });
         await joinRoom(code);
     } catch(e) {
         debugLog("Error: " + e.message);
-        showToast("Error creating room: " + e.message);
+        showToast("Error creating room. Check console.");
     }
 }
 
 async function joinRoom(code) {
     if (!code || !currentUser) return;
-    
+
+    const { doc, getDoc, setDoc, updateDoc, collection, serverTimestamp } = FB;
+
     roomCode = code;
-    localStorage.setItem("assassin_room", code);
+    localStorage.setItem("shadowmark_room", code);
     roomRef = doc(db, "rooms", code);
-    
+
     const snap = await getDoc(roomRef);
-    if (!snap.exists()) {
-        showToast("Room not found");
-        return;
-    }
-    
+    if (!snap.exists()) { showToast("No safehouse found with that code."); return; }
+
     const room = snap.data();
-    if (room.status !== "lobby") {
-        showToast("Game already started");
+    if (room.status === "ended") { showToast("That operation is over."); return; }
+    if (room.status === "active") {
+        // Attempt rejoin
+        const playerDoc = doc(collection(roomRef, "players"), currentUser.uid);
+        const existing = await getDoc(playerDoc);
+        if (existing.exists() && existing.data().alive) {
+            debugLog("Rejoining active game");
+            enterActiveGame();
+            return;
+        }
+        showToast("Operation already in progress. You can't join mid-mission.");
         return;
     }
-    
-    const playerDoc = doc(collection(roomRef, "players"), currentUser.uid);
-    const existing = await getDoc(playerDoc);
-    
+
+    playerRef = doc(collection(roomRef, "players"), currentUser.uid);
+    const existing = await getDoc(playerRef);
+
     if (!existing.exists()) {
-        await setDoc(playerDoc, {
+        await setDoc(playerRef, {
             name: currentPlayerName,
             alive: true,
             isHost: (room.hostId === currentUser.uid),
@@ -180,639 +266,953 @@ async function joinRoom(code) {
             connected: true,
             lastSeen: serverTimestamp(),
             targetId: null,
+            assassinId: null,
             assassinTriggerId: null
         });
     } else {
-        await updateDoc(playerDoc, { connected: true, lastSeen: serverTimestamp() });
+        await updateDoc(playerRef, { connected: true, lastSeen: serverTimestamp() });
     }
-    
+
     goToLobby();
 }
 
+// ============================================================
+// LOBBY
+// ============================================================
+
 function goToLobby() {
     if (!roomCode) return;
-    renderLobbyUI();
+    renderLobby();
     subscribeLobby();
 }
 
-function renderLobbyUI() {
+function renderLobby() {
     render(`
-        <div class="card">
-            <h2>🔪 LOBBY: ${roomCode}</h2>
-            <div id="lobbyPlayerList" class="player-list">Loading players...</div>
-            <div class="sensor-status" id="sensorStatusArea"></div>
-            <button id="readySensorBtn">📡 ENABLE SENSORS </button>
-            <button id="startGameBtn" style="background:#0f3b2c" disabled>▶ START GAME (min. 3 players)</button>
-                <button id="leaveLobbyBtn">🚪QUIT </button>
-            <div class="debug-panel" id="debugLogPanel"></div>
+        <div class="screen fade-up">
+            <div class="room-code-display">
+                <div class="room-code-value">${roomCode}</div>
+                <div class="room-code-hint">Share this code. Trust no one who asks for it twice.</div>
+            </div>
+
+            <h3>AGENTS IN FIELD</h3>
+            <div id="lobbyPlayerList" class="player-list" style="margin-top:0.8rem;">
+                <p style="color:var(--text-dim); font-family:var(--font-mono); font-size:0.75rem;">Awaiting agents...</p>
+            </div>
+
+            <div id="sensorStatusArea" style="margin-bottom:1rem;"></div>
+
+            <button class="btn btn-gold" id="readySensorBtn">📡 ARM YOURSELF</button>
+            <button class="btn btn-primary" id="startGameBtn" disabled>▶ UNLEASH CHAOS</button>
+            <button class="btn-ghost" id="leaveLobbyBtn">↩ ABORT MISSION</button>
+
+            ${debugPanel()}
         </div>
     `);
-    
+
     document.getElementById("readySensorBtn")?.addEventListener("click", requestSensorsAndReady);
     document.getElementById("startGameBtn")?.addEventListener("click", startGameTransaction);
     document.getElementById("leaveLobbyBtn")?.addEventListener("click", leaveRoom);
 }
 
+function subscribeLobby() {
+    if (unsubPlayers) unsubPlayers();
+    const { collection, onSnapshot } = FB;
+
+    unsubPlayers = onSnapshot(collection(roomRef, "players"), snap => {
+        const players = [];
+        snap.forEach(d => players.push({ id: d.id, ...d.data() }));
+
+        const container = document.getElementById("lobbyPlayerList");
+        if (container) {
+            let html = "";
+            players.forEach(p => {
+                html += `
+                    <div class="player-item">
+                        <span class="player-name">${p.name}</span>
+                        <div class="player-badges">
+                            ${p.isHost ? `<span class="badge badge-host">HOST</span>` : ""}
+                            ${p.sensorReady
+                                ? `<span class="badge badge-armed">ARMED</span>`
+                                : `<span class="badge badge-pending">ARMING</span>`
+                            }
+                        </div>
+                    </div>`;
+            });
+            container.innerHTML = html;
+        }
+
+        const armedCount = players.filter(p => p.sensorReady).length;
+        const isHost = players.some(p => p.id === currentUser.uid && p.isHost);
+        const startBtn = document.getElementById("startGameBtn");
+
+        if (startBtn) {
+            if (isHost && armedCount >= 3 && players.length >= 3) {
+                startBtn.disabled = false;
+                startBtn.textContent = `▶ UNLEASH CHAOS (${armedCount} ARMED)`;
+            } else if (isHost) {
+                startBtn.disabled = true;
+                startBtn.textContent = `▶ UNLEASH CHAOS (${armedCount}/${players.length} ARMED, NEED 3)`;
+            } else {
+                startBtn.disabled = true;
+                startBtn.textContent = `WAITING FOR HOST...`;
+            }
+        }
+
+        debugLog(`Players: ${players.length}, Armed: ${armedCount}`);
+    });
+}
+
+// ============================================================
+// SENSORS & CALIBRATION
+// ============================================================
+
 async function requestSensorsAndReady() {
-    if (!currentUser) return;
-    
     motionGranted = false;
     micGranted = false;
-    
-    const sensorArea = document.getElementById("sensorStatusArea");
-    if (sensorArea) {
-        sensorArea.innerHTML = '<div style="text-align:center">⏳ Requesting permissions...</div>';
-    }
-    
-    // Request motion
+
+    const area = document.getElementById("sensorStatusArea");
+    if (area) area.innerHTML = `
+        <div class="sensor-row">
+            <div class="sensor-chip" id="chipMotion">
+                <span class="sensor-icon">📡</span>
+                <span class="sensor-label">Motion</span>
+            </div>
+            <div class="sensor-chip" id="chipMic">
+                <span class="sensor-icon">🎙</span>
+                <span class="sensor-label">Mic</span>
+            </div>
+        </div>`;
+
+    // Motion
     if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
         try {
             await DeviceOrientationEvent.requestPermission();
             motionGranted = true;
-            debugLog("Motion granted");
-        } catch(e) {
-            debugLog("Motion denied: " + e.message);
-        }
+        } catch(e) { debugLog("Motion denied: " + e.message); }
     } else {
         motionGranted = true;
     }
-    
-    // Request mic
+
+    // Mic
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         micGranted = true;
-        stream.getTracks().forEach(function(t) { t.stop(); });
-        debugLog("Mic granted");
-    } catch(e) {
-        debugLog("Mic denied: " + e.message);
+        stream.getTracks().forEach(t => t.stop());
+    } catch(e) { debugLog("Mic denied: " + e.message); }
+
+    // Update chips
+    const chipMotion = document.getElementById("chipMotion");
+    const chipMic = document.getElementById("chipMic");
+    if (chipMotion) chipMotion.className = `sensor-chip ${motionGranted ? "granted" : "denied"}`;
+    if (chipMic) chipMic.className = `sensor-chip ${micGranted ? "granted" : "denied"}`;
+
+    if (!motionGranted) {
+        showToast("⚠ Motion sensors unavailable. Some triggers may not work.");
     }
-    
-    // Update sensor status display
-    if (sensorArea) {
-        if (micGranted && motionGranted) {
-            sensorArea.innerHTML = '<div style="text-align:center; color:#0f0;">✅ All sensors ready!</div>';
-        } else if (!micGranted && motionGranted) {
-            sensorArea.innerHTML = `
-                <div style="text-align:center">
-                    <div style="color:#ff8888;">⚠️ Microphone access denied</div>
-                    <button id="retryMicBtn" style="padding:0.3rem 1rem; font-size:0.8rem; margin-top:0.3rem;">🔁 Request Mic Again</button>
-                </div>
-            `;
-            document.getElementById("retryMicBtn")?.addEventListener("click", requestSensorsAndReady);
-        } else if (micGranted && !motionGranted) {
-            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ Motion sensors not available.</div>';
-        } else {
-            sensorArea.innerHTML = '<div style="text-align:center; color:#ff8888;">⚠️ No sensors available.</div>';
-        }
-    }
-    
-    const playerDoc = doc(collection(roomRef, "players"), currentUser.uid);
-    await updateDoc(playerDoc, {
+
+    const { doc, collection, updateDoc } = FB;
+    await updateDoc(doc(collection(roomRef, "players"), currentUser.uid), {
         sensorReady: true,
         motionEnabled: motionGranted,
         micEnabled: micGranted
     });
-    
-    showToast("Ready! Waiting for host to start...");
+
+    showToast("Armed and ready. Waiting for the host.");
 }
 
-function subscribeLobby() {
-    if (unsubPlayers) unsubPlayers();
-    
-    const playersQuery = collection(roomRef, "players");
-    unsubPlayers = onSnapshot(playersQuery, function(snap) {
-        const players = [];
-        snap.forEach(function(d) {
-            players.push({ id: d.id, ...d.data() });
-        });
-        
-        const container = document.getElementById("lobbyPlayerList");
-        if (container) {
-            let html = "";
-            for (let i = 0; i < players.length; i++) {
-                const p = players[i];
-                html += '<div class="player-item">';
-                html += '<span>' + p.name;
-                if (p.isHost) html += ' <span class="badge-host">HOST</span>';
-                html += '</span>';
-                if (p.sensorReady) {
-                    html += '<span class="badge-ready">✅ READY</span>';
-                } else {
-                    html += '<span class="badge-missing">⏳ PENDING</span>';
-                }
-                html += '</div>';
-            }
-            container.innerHTML = html;
-        }
-        
-        const readyCount = players.filter(function(p) { return p.sensorReady; }).length;
-        const startBtn = document.getElementById("startGameBtn");
-        const isHost = players.some(function(p) { return p.id === currentUser.uid && p.isHost; });
-        
-        if (startBtn && readyCount >= 3 && players.length >= 3 && isHost) {
-            startBtn.disabled = false;
-        } else if (startBtn && !isHost) {
-            startBtn.disabled = true;
-        } else if (startBtn) {
-            startBtn.disabled = true;
-        }
-        
-        debugLog("Players: " + players.length + ", Ready: " + readyCount);
-    });
-}
+// ============================================================
+// START GAME
+// ============================================================
 
 async function startGameTransaction() {
     if (!roomRef) return;
-    
+    const { collection, getDocs, doc, updateDoc, writeBatch, serverTimestamp, Timestamp } = FB;
+
     const playersSnap = await getDocs(collection(roomRef, "players"));
     const players = [];
-    playersSnap.forEach(function(d) {
+    playersSnap.forEach(d => {
         const data = d.data();
         if (data.alive !== false && data.sensorReady === true) {
-            players.push({ id: d.id, data: data });
+            players.push({ id: d.id, data });
         }
     });
-    
-    if (players.length < 3) {
-        showToast("Min. 3 players required");
-        return;
-    }
-    
-    // Shuffle players
-    const shuffled = [];
-    for (let i = 0; i < players.length; i++) {
-        shuffled.push(players[i].id);
-    }
+
+    if (players.length < 3) { showToast("Need at least 3 armed agents."); return; }
+
+    // Shuffle
+    const shuffled = players.map(p => p.id);
     for (let i = shuffled.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        const temp = shuffled[i];
-        shuffled[i] = shuffled[j];
-        shuffled[j] = temp;
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-    
-    // Assign targets (each player's target is the next in the loop)
+
+    // Assign targets in a circle: A→B, B→C, C→A
     const targetMap = {};
+    const assassinMap = {};
     for (let i = 0; i < shuffled.length; i++) {
         targetMap[shuffled[i]] = shuffled[(i + 1) % shuffled.length];
+        assassinMap[shuffled[(i + 1) % shuffled.length]] = shuffled[i];
     }
-    
-    // Each player gets a trigger that their ASSASSIN must use to kill them
-    const triggersList = ["SHAKE_PHONE", "PHONE_FACE_DOWN", "TILT_LEFT_RIGHT", "LOUD_NOISE", "SUSTAINED_MOVEMENT_3S", "PHONE_PICKED_UP"];
+
+    // Assign triggers (each player's trigger is what their assassin must make THEM do)
     const triggerAssignment = {};
-    for (let i = 0; i < shuffled.length; i++) {
-        const pid = shuffled[i];
-        triggerAssignment[pid] = triggersList[Math.floor(Math.random() * triggersList.length)];
+    for (const pid of shuffled) {
+        triggerAssignment[pid] = TRIGGER_KEYS[Math.floor(Math.random() * TRIGGER_KEYS.length)];
     }
-    
-    const startedAt = Timestamp.now();
+
     const endTime = Timestamp.fromMillis(Date.now() + 10 * 60 * 1000);
     const batch = writeBatch(db);
-    
+
     batch.update(roomRef, {
         status: "active",
-        startedAt: startedAt,
-        endTime: endTime,
+        startedAt: Timestamp.now(),
+        endTime,
         aliveCount: shuffled.length,
         lastUpdated: serverTimestamp()
     });
-    
-    for (let i = 0; i < shuffled.length; i++) {
-        const pid = shuffled[i];
-        const playerDoc = doc(collection(roomRef, "players"), pid);
-        batch.update(playerDoc, {
+
+    for (const pid of shuffled) {
+        batch.update(doc(collection(roomRef, "players"), pid), {
             targetId: targetMap[pid],
+            assassinId: assassinMap[pid],
             assassinTriggerId: triggerAssignment[pid]
         });
     }
-    
+
     await batch.commit();
     debugLog("Game started");
     enterActiveGame();
 }
 
-function enterActiveGame() {
+// ============================================================
+// ACTIVE GAME
+// ============================================================
+
+async function enterActiveGame() {
     currentGameStatus = "active";
-    startGameHUD();
-    subscribeActiveGame();
-    
-    if (sensorManager) {
-        sensorManager.destroy();
+    const { doc, collection, getDoc } = FB;
+
+    if (!playerRef) {
+        playerRef = doc(collection(roomRef, "players"), currentUser.uid);
     }
-    sensorManager = new SensorManager();
-    sensorManager.init();
-}
 
-function startGameHUD() {
-    render(`
-        <div>
-            <div class="hud">
-                <span id="aliveCountHUD">👥 --</span>
-                <span id="timerDisplay" class="timer">10:00</span>
-                <span id="statusBadge">🔪 ACTIVE</span>
-            </div>
-            <div class="mission-card">
-                <h3>🎯 YOUR MISSION</h3>
-                <div style="font-size:1.2rem; margin:0.5rem 0;">Make your target perform:</div>
-                <div id="targetName" class="target-name" style="font-size:1.5rem;">---</div>
-                <div id="missionText" class="mission-text" style="font-size:1.3rem; color:#ff8888; margin:0.5rem 0;">---</div>
-                <div style="font-size:0.9rem; margin-top:1rem; color:#aaa;">
-                    ⚠️ Note that your assassin is also attempting to make you perform your trigger<br>
-                    Proceed cautiously!
-                </div>
-            </div>
-            <div class="debug-panel" id="debugLogPanel"></div>
-        </div>
-    `);
-    updateActiveUI();
-}
-
-async function updateActiveUI() {
-    if (!playerRef) return;
-    
+    // Load my data
     const snap = await getDoc(playerRef);
     if (snap.exists()) {
         const data = snap.data();
         aliveFlag = data.alive;
         isDeadLocally = !aliveFlag;
         myTarget = data.targetId;
+        myAssassinId = data.assassinId;
         myAssassinTrigger = data.assassinTriggerId;
-        
-        if (myTarget) {
-            const targetSnap = await getDoc(doc(collection(roomRef, "players"), myTarget));
-            const targetElem = document.getElementById("targetName");
-            if (targetElem) {
-                targetElem.innerHTML = targetSnap.exists() ? targetSnap.data().name : "unknown";
-            }
-            
-            if (targetSnap.exists()) {
-                myTargetsTrigger = targetSnap.data().assassinTriggerId;
-                const missionElem = document.getElementById("missionText");
-                if (missionElem) {
-                    missionElem.innerHTML = getTriggerActionText(myTargetsTrigger);
-                }
-            }
+    }
+
+    showCalibration();
+}
+
+function showCalibration() {
+    const steps = [
+        { prompt: "SHAKE IT", sub: "As hard as you can. Mean it." },
+        { prompt: "FACE DOWN", sub: "Lay it flat on a surface, screen down." },
+        { prompt: "FLIP IT", sub: "Turn it completely upside down." },
+        { prompt: "HOLD FLAT", sub: "Perfectly level. Like you're hiding a secret." }
+    ];
+
+    render(`
+        <div class="screen calibration-screen fade-up">
+            <h3 style="text-align:center; margin-bottom:0.5rem;">CALIBRATION</h3>
+            <p class="flavor-text" style="text-align:center;">
+                Before we begin — let's see what you're made of.
+            </p>
+
+            <div class="calibration-bar-wrap">
+                <div class="calibration-bar-fill" id="calibBar"></div>
+            </div>
+
+            <div class="calibration-prompt" id="calibPrompt">${steps[0].prompt}</div>
+            <div class="calibration-sub" id="calibSub">${steps[0].sub}</div>
+            <div class="calibration-step-count" id="calibCount">1 / ${steps.length}</div>
+
+            <div class="spacer"></div>
+            <button class="btn btn-primary" id="calibNextBtn">DONE</button>
+            <button class="btn-ghost" id="calibSkipBtn">SKIP CALIBRATION</button>
+        </div>
+    `);
+
+    let step = 0;
+
+    function advance() {
+        step++;
+        const bar = document.getElementById("calibBar");
+        if (bar) bar.style.width = `${(step / steps.length) * 100}%`;
+
+        if (step >= steps.length) {
+            // Done — show mission
+            setTimeout(showMission, 300);
+            return;
+        }
+
+        const prompt = document.getElementById("calibPrompt");
+        const sub = document.getElementById("calibSub");
+        const count = document.getElementById("calibCount");
+        if (prompt) { prompt.style.opacity = "0"; setTimeout(() => { prompt.textContent = steps[step].prompt; prompt.style.opacity = "1"; }, 150); }
+        if (sub) sub.textContent = steps[step].sub;
+        if (count) count.textContent = `${step + 1} / ${steps.length}`;
+    }
+
+    document.getElementById("calibNextBtn")?.addEventListener("click", advance);
+    document.getElementById("calibSkipBtn")?.addEventListener("click", showMission);
+}
+
+async function showMission() {
+    const { doc, collection, getDoc } = FB;
+
+    // Fetch target name
+    let targetName = "UNKNOWN";
+    let methodText = "---";
+
+    if (myTarget) {
+        const targetSnap = await getDoc(doc(collection(roomRef, "players"), myTarget));
+        if (targetSnap.exists()) {
+            targetName = targetSnap.data().name;
+            myTargetsTrigger = targetSnap.data().assassinTriggerId;
+            methodText = TRIGGERS[myTargetsTrigger]?.hud || "a specific action";
         }
     }
-    
+
+    render(`
+        <div class="screen fade-up">
+            <h3 style="margin-bottom: 2rem;">YOUR ORDERS</h3>
+
+            <div class="mission-card">
+                <div class="mission-label">TARGET</div>
+                <div class="mission-target">${targetName}</div>
+                <div class="mission-method-label">METHOD</div>
+                <div class="mission-method">${methodText}</div>
+                <div class="mission-warning">
+                    <p>⚠ Your assassin is already watching you.<br>They know exactly what makes you slip.</p>
+                </div>
+            </div>
+
+            <p class="flavor-text" style="font-size:0.9rem;">
+                Be subtle. Be patient. Be ruthless.<br>
+                The clock starts when you do.
+            </p>
+
+            <div class="spacer"></div>
+            <button class="btn btn-primary" id="startHuntBtn">🔒 I'VE READ THIS. START THE HUNT.</button>
+        </div>
+    `);
+
+    document.getElementById("startHuntBtn")?.addEventListener("click", () => {
+        startSensors();
+        showGameHUD();
+        subscribeActiveGame();
+    });
+}
+
+function showGameHUD() {
+    render(`
+        <div class="screen fade-up">
+            <div class="hud">
+                <span class="hud-alive" id="aliveCountHUD">👥 --</span>
+                <span class="hud-timer" id="timerDisplay">10:00</span>
+                <span class="hud-status" id="statusBadge">HUNTING</span>
+            </div>
+
+            <div id="eliminatedBanner"></div>
+
+            <div class="mission-card" id="missionCard">
+                <div class="mission-label">TARGET</div>
+                <div class="mission-target" id="targetName">---</div>
+                <div class="mission-method-label">METHOD</div>
+                <div class="mission-method" id="missionText">---</div>
+            </div>
+
+            <p class="flavor-text" id="flavorLine">
+                Stay close. Stay quiet. Wait for your moment.
+            </p>
+
+            ${debugPanel()}
+        </div>
+    `);
+
+    refreshMissionCard();
+}
+
+async function refreshMissionCard() {
+    const { doc, collection, getDoc } = FB;
+    if (!playerRef) return;
+
+    const snap = await getDoc(playerRef);
+    if (!snap.exists()) return;
+    const data = snap.data();
+    myTarget = data.targetId;
+    myAssassinId = data.assassinId;
+    myAssassinTrigger = data.assassinTriggerId;
+    aliveFlag = data.alive;
+    isDeadLocally = !aliveFlag;
+
+    if (myTarget) {
+        const targetSnap = await getDoc(doc(collection(roomRef, "players"), myTarget));
+        if (targetSnap.exists()) {
+            myTargetsTrigger = targetSnap.data().assassinTriggerId;
+            const el = document.getElementById("targetName");
+            const mt = document.getElementById("missionText");
+            if (el) el.textContent = targetSnap.data().name;
+            if (mt) mt.textContent = TRIGGERS[myTargetsTrigger]?.hud || "---";
+        }
+    }
+
     if (!aliveFlag) {
-        document.body.classList.add("dead-overlay");
-    } else {
-        document.body.classList.remove("dead-overlay");
+        document.body.classList.add("is-dead");
+        const banner = document.getElementById("eliminatedBanner");
+        if (banner) banner.innerHTML = `
+            <div class="eliminated-banner">
+                <p>☠ YOU HAVE BEEN ELIMINATED</p>
+            </div>`;
+        const statusBadge = document.getElementById("statusBadge");
+        if (statusBadge) { statusBadge.textContent = "ELIMINATED"; statusBadge.style.color = "var(--text-dim)"; }
     }
 }
 
-function getTriggerActionText(triggerId) {
-    const map = {
-        "SHAKE_PHONE": "🔨 have them SHAKE their phone violently",
-        "PHONE_FACE_DOWN": "📱 have them place their phone FACE DOWN",
-        "TILT_LEFT_RIGHT": "↔️ have them TILT their phone left and right rapidly",
-        "LOUD_NOISE": "📢 have them make a LOUD noise (clap, shout)",
-        "SUSTAINED_MOVEMENT_3S": "🏃 have them move their phone continuously for 3 seconds",
-        "PHONE_PICKED_UP": "⬆️ have them PICK UP their phone from a flat surface"
-    };
-    return map[triggerId] || "Complete your assassination mission";
-}
-
-function getTriggerDescription(triggerId) {
-    const map = {
-        "SHAKE_PHONE": "shake phone violently",
-        "PHONE_FACE_DOWN": "phone face down",
-        "TILT_LEFT_RIGHT": "tilting phone left and right",
-        "LOUD_NOISE": "making a loud noise",
-        "SUSTAINED_MOVEMENT_3S": "moving phone continuously",
-        "PHONE_PICKED_UP": "picking up phone"
-    };
-    return map[triggerId] || "a specific action";
-}
+// ============================================================
+// SUBSCRIPTIONS
+// ============================================================
 
 function subscribeActiveGame() {
     if (unsubRoom) unsubRoom();
-    
-    unsubRoom = onSnapshot(roomRef, function(snap) {
+    if (unsubMe) unsubMe();
+    const { onSnapshot, doc, collection } = FB;
+
+    unsubRoom = onSnapshot(roomRef, snap => {
         const data = snap.data();
-        if (data && data.endTime && data.endTime.toMillis) {
+        if (!data) return;
+
+        if (data.endTime?.toMillis) {
             endTimestamp = data.endTime.toMillis();
-            updateTimerDisplay();
             if (timerInterval) clearInterval(timerInterval);
-            timerInterval = setInterval(updateTimerDisplay, 1000);
+            timerInterval = setInterval(updateTimer, 1000);
+            updateTimer();
         }
-        if (data && data.aliveCount !== undefined) {
-            const aliveElem = document.getElementById("aliveCountHUD");
-            if (aliveElem) {
-                aliveElem.innerHTML = "👥 " + data.aliveCount + " alive";
-            }
+
+        const aliveEl = document.getElementById("aliveCountHUD");
+        if (aliveEl && data.aliveCount !== undefined) {
+            aliveEl.textContent = `👥 ${data.aliveCount} alive`;
         }
-        if (data && data.status === "ended") {
-            endGameHandler(data.winnerIds);
+
+        if (data.status === "ended") {
+            handleGameOver(data.winnerIds);
         }
     });
-    
-    playerRef = doc(collection(roomRef, "players"), currentUser.uid);
-    if (unsubMe) unsubMe();
-    
-    unsubMe = onSnapshot(playerRef, function(snap) {
-        if (snap.exists()) {
-            const me = snap.data();
-            aliveFlag = me.alive;
-            if (!aliveFlag && !isDeadLocally) {
-                isDeadLocally = true;
-                if (sensorManager) sensorManager.destroy();
-                showToast("☠️ YOU HAVE BEEN ELIMINATED!");
-            }
+
+    if (!playerRef) playerRef = doc(collection(roomRef, "players"), currentUser.uid);
+
+    unsubMe = onSnapshot(playerRef, snap => {
+        if (!snap.exists()) return;
+        const me = snap.data();
+
+        // Was alive, now dead
+        if (aliveFlag && me.alive === false && !isDeadLocally) {
+            isDeadLocally = true;
+            aliveFlag = false;
+            if (sensorManager) sensorManager.destroy();
+            document.body.classList.add("is-dead");
+            showToast("☠ You've been eliminated.");
+            refreshMissionCard();
+        }
+
+        // Target changed (new assignment after kill)
+        if (me.targetId && me.targetId !== myTarget) {
             myTarget = me.targetId;
             myAssassinTrigger = me.assassinTriggerId;
-            updateActiveUI();
+            refreshMissionCard();
+            showToast("🎯 Target neutralised. New assignment incoming.");
         }
+
+        aliveFlag = me.alive;
+        myTarget = me.targetId;
+        myAssassinId = me.assassinId;
+        myAssassinTrigger = me.assassinTriggerId;
     });
 }
 
-function updateTimerDisplay() {
+// ============================================================
+// TIMER
+// ============================================================
+
+function updateTimer() {
     if (!endTimestamp) return;
-    
     const diff = Math.max(0, endTimestamp - Date.now());
-    const minutes = Math.floor(diff / 60000);
-    const seconds = Math.floor((diff % 60000) / 1000);
-    const timerElem = document.getElementById("timerDisplay");
-    if (timerElem) {
-        timerElem.innerHTML = minutes + ":" + (seconds < 10 ? "0" + seconds : seconds);
+    const m = Math.floor(diff / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    const el = document.getElementById("timerDisplay");
+    if (el) {
+        el.textContent = `${m}:${s < 10 ? "0" + s : s}`;
+        el.classList.toggle("urgent", diff < 60000);
     }
-    
-    if (diff <= 0 && currentGameStatus === "active") {
-        endGameByTimer();
-    }
+    if (diff <= 0 && currentGameStatus === "active") endGameByTimer();
 }
 
 async function endGameByTimer() {
-    const roomSnap = await getDoc(roomRef);
+    currentGameStatus = "ended";
+    const { doc, getDocs, query, where, updateDoc, collection } = FB;
+    const roomSnap = await FB.getDoc(roomRef);
     if (roomSnap.exists() && roomSnap.data().status !== "ended") {
-        const alivePlayersQuery = await getDocs(query(collection(roomRef, "players"), where("alive", "==", true)));
+        const aliveQuery = await getDocs(query(collection(roomRef, "players"), where("alive", "==", true)));
         const winners = [];
-        alivePlayersQuery.forEach(function(d) {
-            winners.push(d.id);
-        });
+        aliveQuery.forEach(d => winners.push(d.id));
         await updateDoc(roomRef, { status: "ended", winnerIds: winners });
     }
 }
 
-function endGameHandler(winnerIds) {
+// ============================================================
+// SENSORS
+// ============================================================
+
+function startSensors() {
+    if (sensorManager) sensorManager.destroy();
+    sensorManager = new SensorManager();
+    sensorManager.init();
+}
+
+class SensorManager {
+    constructor() {
+        this.active = true;
+        this.graceEnd = Date.now() + 8000; // 8s grace — read your mission first
+        this.flatBuffer = [];
+        this.rafId = null;
+        this.mediaStream = null;
+        this.audioCtx = null;
+        this.micAnalyser = null;
+        this._onMotion = this._onMotion.bind(this);
+        this._onOrientation = this._onOrientation.bind(this);
+    }
+
+    async init() {
+        if (!aliveFlag || isDeadLocally) return;
+        window.addEventListener("devicemotion", this._onMotion);
+        window.addEventListener("deviceorientation", this._onOrientation);
+        debugLog("Sensors live");
+    }
+
+    _onMotion(e) {
+        if (!this.active || !aliveFlag || Date.now() < this.graceEnd) return;
+        if (!myAssassinTrigger) return;
+
+        const acc = e.accelerationIncludingGravity;
+        if (!acc) return;
+        const mag = Math.sqrt((acc.x||0)**2 + (acc.y||0)**2 + (acc.z||0)**2);
+
+        if (myAssassinTrigger === "SHAKE_PHONE" && mag > 30) {
+            this._triggerFired("SHAKE_PHONE");
+        }
+    }
+
+    _onOrientation(e) {
+        if (!this.active || !aliveFlag || Date.now() < this.graceEnd) return;
+        if (!myAssassinTrigger) return;
+
+        const beta = e.beta || 0;
+        const gamma = e.gamma || 0;
+
+        if (myAssassinTrigger === "PHONE_FACE_DOWN" && Math.abs(beta) > 140) {
+            this._triggerFired("PHONE_FACE_DOWN");
+        }
+
+        if (myAssassinTrigger === "FLIP_UPSIDE_DOWN" && beta < -90) {
+            this._triggerFired("FLIP_UPSIDE_DOWN");
+        }
+
+        if (myAssassinTrigger === "HOLD_FLAT_3S") {
+            const isFlat = Math.abs(beta) < 12 && Math.abs(gamma) < 12;
+            if (isFlat) {
+                this.flatBuffer.push(Date.now());
+                this.flatBuffer = this.flatBuffer.filter(t => Date.now() - t < 3100);
+                if (this.flatBuffer.length > 10) {
+                    this._triggerFired("HOLD_FLAT_3S");
+                }
+            } else {
+                this.flatBuffer = [];
+            }
+        }
+    }
+
+    _triggerFired(triggerId) {
+        if (!aliveFlag || isDeadLocally) return;
+
+        const cooldown = localTriggerCooldown.get(triggerId);
+        if (cooldown && cooldown > Date.now()) return;
+        localTriggerCooldown.set(triggerId, Date.now() + 12000);
+
+        debugLog(`Trigger fired: ${triggerId}`);
+        this.showGuessScreen();
+    }
+
+    showGuessScreen() {
+        // Pause sensors briefly
+        this.active = false;
+
+        // Get list of alive suspects (everyone except self)
+        // We'll fetch from Firestore
+        const { getDocs, query, where, collection } = FB;
+        getDocs(query(collection(roomRef, "players"), where("alive", "==", true))).then(snap => {
+            const suspects = [];
+            snap.forEach(d => {
+                if (d.id !== currentUser.uid) suspects.push({ id: d.id, ...d.data() });
+            });
+
+            // Overlay the guess screen on top
+            const existing = document.getElementById("guessOverlay");
+            if (existing) existing.remove();
+
+            const overlay = document.createElement("div");
+            overlay.id = "guessOverlay";
+            overlay.style.cssText = `
+                position: fixed; inset: 0; background: var(--black);
+                z-index: 1000; overflow-y: auto; padding: 2rem 1.5rem;
+                display: flex; flex-direction: column; max-width: 480px; margin: 0 auto;
+            `;
+
+            let suspectsHTML = suspects.map(s => `
+                <button class="suspect-btn" data-id="${s.id}" data-name="${s.name}">
+                    <span>${s.name}</span>
+                    <span class="suspect-arrow">→</span>
+                </button>
+            `).join("");
+
+            overlay.innerHTML = `
+                <div class="guess-header fade-up">
+                    <span class="guess-eye">👁</span>
+                    <h2>SOMEONE MADE THEIR MOVE</h2>
+                    <p class="flavor-text" style="text-align:center;">
+                        A move was just detected on your phone.<br>
+                        Think carefully. Who's been too close? Too friendly?
+                    </p>
+                    <h3 style="text-align:center; margin-bottom:1rem;">WHO IS YOUR ASSASSIN?</h3>
+                </div>
+
+                <div class="guess-suspects">
+                    ${suspectsHTML}
+                </div>
+
+                <button class="btn btn-secondary" id="guessTakeHitBtn">
+                    Take the hit — I have no idea
+                </button>
+            `;
+
+            document.body.appendChild(overlay);
+
+            // Suspect buttons
+            overlay.querySelectorAll(".suspect-btn").forEach(btn => {
+                btn.addEventListener("click", () => {
+                    const guessedId = btn.dataset.id;
+                    const guessedName = btn.dataset.name;
+                    overlay.remove();
+                    this.resolveGuess(guessedId, guessedName);
+                });
+            });
+
+            // Take the hit
+            document.getElementById("guessTakeHitBtn")?.addEventListener("click", () => {
+                overlay.remove();
+                this.resolveGuess(null, null);
+            });
+        });
+    }
+
+    async resolveGuess(guessedId, guessedName) {
+        // Was the guess correct?
+        const correctAssassin = myAssassinId;
+        const guessedCorrectly = guessedId === correctAssassin;
+
+        if (guessedId === null) {
+            // No guess — take the elimination
+            await this._eliminateSelf();
+            showGuessResult(false, null);
+        } else if (guessedCorrectly) {
+            // Correct — eliminate the assassin instead
+            await this._eliminatePlayer(correctAssassin);
+            showGuessResult(true, guessedName);
+        } else {
+            // Wrong — self eliminate
+            await this._eliminateSelf();
+            showGuessResult(false, guessedName);
+        }
+
+        // Resume sensors if still alive
+        setTimeout(() => { this.active = aliveFlag && !isDeadLocally; }, 2000);
+    }
+
+    async _eliminateSelf() {
+        if (!aliveFlag || isDeadLocally) return;
+        debugLog("Eliminating self");
+        await this._runEliminationTransaction(currentUser.uid, true);
+    }
+
+    async _eliminatePlayer(playerId) {
+        debugLog("Eliminating player: " + playerId);
+        await this._runEliminationTransaction(playerId, false);
+    }
+
+    async _runEliminationTransaction(victimId, isSelf) {
+        const { runTransaction, doc, collection, getDocs, updateDoc } = FB;
+
+        try {
+            await runTransaction(db, async transaction => {
+                const victimRef = doc(collection(roomRef, "players"), victimId);
+                const victimSnap = await transaction.get(victimRef);
+                const roomSnap = await transaction.get(roomRef);
+
+                if (!victimSnap.exists() || victimSnap.data().alive === false) return;
+                if (roomSnap.data().status !== "active") return;
+
+                const victimData = victimSnap.data();
+                const newAliveCount = Math.max(0, (roomSnap.data().aliveCount || 1) - 1);
+
+                // Mark victim dead
+                transaction.update(victimRef, { alive: false });
+
+                // Re-link the chain: victim's assassin now targets victim's target
+                const victimAssassinId = victimData.assassinId;
+                const victimTargetId = victimData.targetId;
+
+                if (victimAssassinId && victimTargetId && victimAssassinId !== victimId) {
+                    const assassinRef = doc(collection(roomRef, "players"), victimAssassinId);
+                    transaction.update(assassinRef, { targetId: victimTargetId });
+                }
+
+                // Update alive count
+                transaction.update(roomRef, {
+                    aliveCount: newAliveCount,
+                    lastUpdated: FB.serverTimestamp()
+                });
+
+                // Check for last survivor
+                if (newAliveCount <= 1) {
+                    // Winner is whoever survives — will be resolved via endGameByTimer or snapshot
+                    // We set status ended here and let the winner be determined by alive query
+                }
+            });
+        } catch(e) {
+            debugLog("Transaction error: " + e.message);
+        }
+
+        if (isSelf) {
+            isDeadLocally = true;
+            aliveFlag = false;
+            this.destroy();
+        }
+    }
+
+    destroy() {
+        this.active = false;
+        window.removeEventListener("devicemotion", this._onMotion);
+        window.removeEventListener("deviceorientation", this._onOrientation);
+        if (this.rafId) cancelAnimationFrame(this.rafId);
+        if (this.mediaStream) this.mediaStream.getTracks().forEach(t => t.stop());
+        if (this.audioCtx) this.audioCtx.close();
+        debugLog("Sensors destroyed");
+    }
+}
+
+// ============================================================
+// GUESS RESULT
+// ============================================================
+
+function showGuessResult(survived, guessedName) {
+    const existing = document.getElementById("resultOverlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "resultOverlay";
+    overlay.style.cssText = `
+        position: fixed; inset: 0; background: var(--black);
+        z-index: 1001; display: flex; align-items: center;
+        justify-content: center; padding: 2rem;
+    `;
+
+    if (survived) {
+        overlay.innerHTML = `
+            <div class="result-screen fade-up">
+                <span class="result-icon">✅</span>
+                <div class="result-title success">NICE CATCH</div>
+                <p class="result-sub">
+                    You spotted the shadow before it got you.<br>
+                    <strong style="color:var(--gold);">${guessedName}</strong> has been neutralised.
+                </p>
+                <button class="btn btn-gold" id="resultContinue">BACK TO THE HUNT</button>
+            </div>`;
+    } else {
+        overlay.innerHTML = `
+            <div class="result-screen fade-up">
+                <span class="result-icon">☠</span>
+                <div class="result-title danger">WRONG CALL</div>
+                <p class="result-sub">
+                    ${guessedName
+                        ? `<strong style="color:var(--red);">${guessedName}</strong> wasn't your assassin.<br>`
+                        : ''
+                    }The shadows don't forgive mistakes.<br>You've been eliminated.
+                </p>
+                <button class="btn btn-secondary" id="resultContinue">SPECTATE</button>
+            </div>`;
+    }
+
+    document.body.appendChild(overlay);
+    document.getElementById("resultContinue")?.addEventListener("click", () => {
+        overlay.remove();
+        refreshMissionCard();
+    });
+}
+
+// ============================================================
+// GAME OVER
+// ============================================================
+
+async function handleGameOver(winnerIds) {
     if (timerInterval) clearInterval(timerInterval);
     if (sensorManager) sensorManager.destroy();
     currentGameStatus = "ended";
-    
+
+    const { getDocs, collection } = FB;
+
+    // Fetch winner names
+    let winnerLines = "";
+    if (winnerIds && winnerIds.length > 0) {
+        const playersSnap = await getDocs(collection(roomRef, "players"));
+        const winnerNames = [];
+        playersSnap.forEach(d => {
+            if (winnerIds.includes(d.id)) winnerNames.push(d.data().name);
+        });
+
+        if (winnerNames.length === 1) {
+            winnerLines = `
+                <span class="winner-name">${winnerNames[0]}</span>
+                <p class="flavor-text" style="text-align:center;">
+                    Every agent in the city had their name.<br>
+                    None of them were good enough.
+                </p>`;
+        } else {
+            winnerLines = `
+                <h3 style="text-align:center; margin-bottom:0.8rem;">SURVIVORS</h3>
+                <div class="survivors-list">
+                    ${winnerNames.map(n => `<div class="survivor-item">${n}</div>`).join("")}
+                </div>
+                <p class="flavor-text" style="text-align:center;">
+                    Time ran out. The contracts remain open.
+                </p>`;
+        }
+    }
+
+    const isWinner = winnerIds && winnerIds.includes(currentUser.uid);
+
     render(`
-        <div class="card">
-            <h1>🏆 GAME OVER</h1>
-            <p>Game ended</p>
-            <button id="backHome">🏠 Main Menu</button>
+        <div class="screen fade-up" style="text-align:center;">
+            <div style="padding-top: 4rem;">
+                <span class="result-icon" style="font-size: 4rem; display:block; margin-bottom:1rem;">
+                    ${isWinner ? "🏆" : "☠"}
+                </span>
+                <div class="result-title ${isWinner ? "success" : ""}" style="margin-bottom:0.5rem;">
+                    ${winnerIds?.length === 1 ? "THE LAST SHADOW" : "TIME'S UP"}
+                </div>
+                ${winnerLines}
+            </div>
+            <div class="spacer"></div>
+            <button class="btn btn-primary" id="runItBackBtn">🔁 RUN IT BACK</button>
+            <button class="btn-ghost" id="quitBtn">DISAPPEAR</button>
         </div>
     `);
-    
-    document.getElementById("backHome")?.addEventListener("click", function() {
-        localStorage.removeItem("assassin_room");
+
+    document.getElementById("runItBackBtn")?.addEventListener("click", () => {
+        localStorage.removeItem("shadowmark_room");
+        window.location.reload();
+    });
+    document.getElementById("quitBtn")?.addEventListener("click", () => {
+        localStorage.clear();
         window.location.reload();
     });
 }
 
+// ============================================================
+// LEAVE ROOM
+// ============================================================
+
 async function leaveRoom() {
     if (roomRef && currentUser) {
-        const playerDoc = doc(collection(roomRef, "players"), currentUser.uid);
-        await updateDoc(playerDoc, { connected: false });
+        const { doc, collection, updateDoc } = FB;
+        await updateDoc(doc(collection(roomRef, "players"), currentUser.uid), { connected: false });
     }
-    localStorage.removeItem("assassin_room");
+    if (unsubPlayers) unsubPlayers();
+    if (unsubRoom) unsubRoom();
+    if (unsubMe) unsubMe();
+    localStorage.removeItem("shadowmark_room");
     window.location.reload();
 }
 
-// Sensor Manager
-class SensorManager {
-    constructor() {
-        this.active = true;
-        this.graceEnd = Date.now() + 3000;
-        this.motionBuffer = [];
-        this.micAnalyser = null;
-        this.mediaStream = null;
-        this.micInterval = null;
-        this.handleMotion = this.handleMotion.bind(this);
-        this.handleOrientation = this.handleOrientation.bind(this);
-    }
-    
-    async init() {
-        if (!aliveFlag) return;
-        
-        window.addEventListener("devicemotion", this.handleMotion);
-        window.addEventListener("deviceorientation", this.handleOrientation);
-        
-        if (micGranted) {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                this.mediaStream = stream;
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                const audioCtx = new AudioCtx();
-                const source = audioCtx.createMediaStreamSource(stream);
-                this.micAnalyser = audioCtx.createAnalyser();
-                source.connect(this.micAnalyser);
-                this.micAnalyser.fftSize = 256;
-                this.startMicCheck();
-            } catch(e) {
-                debugLog("Mic check failed: " + e.message);
-            }
-        }
-        
-        document.addEventListener("visibilitychange", function() {
-            if (document.hidden) {
-                this.active = false;
-            } else {
-                this.active = true;
-            }
-        }.bind(this));
-    }
-    
-    startMicCheck() {
-        const checkMic = function() {
-            if (!this.active || !aliveFlag || !this.micAnalyser) return;
-            
-            const data = new Uint8Array(this.micAnalyser.frequencyBinCount);
-            this.micAnalyser.getByteTimeDomainData(data);
-            let max = 0;
-            for (let i = 0; i < data.length; i++) {
-                const v = (data[i] - 128) / 128;
-                if (Math.abs(v) > max) max = Math.abs(v);
-            }
-            
-            if (max > 0.65 && myAssassinTrigger === "LOUD_NOISE") {
-                this.attemptSelfElimination();
-            }
-            
-            this.micInterval = requestAnimationFrame(checkMic.bind(this));
-        }.bind(this);
-        
-        checkMic();
-    }
-    
-    handleMotion(e) {
-        if (!this.active || !aliveFlag || Date.now() < this.graceEnd) return;
-        
-        const acc = e.accelerationIncludingGravity;
-        const mag = Math.sqrt(
-            (acc.x || 0) * (acc.x || 0) +
-            (acc.y || 0) * (acc.y || 0) +
-            (acc.z || 0) * (acc.z || 0)
-        );
-        
-        if (myAssassinTrigger === "SHAKE_PHONE" && mag > 28) {
-            this.attemptSelfElimination();
-        }
-        
-        if (myAssassinTrigger === "SUSTAINED_MOVEMENT_3S") {
-            this.motionBuffer.push(Date.now());
-            this.motionBuffer = this.motionBuffer.filter(function(t) {
-                return Date.now() - t < 3000;
+// ============================================================
+// BOOT
+// ============================================================
+
+function boot() {
+    debugLog("Booting Shadowmark...");
+    const { initializeApp, getAuth, signInAnonymously, onAuthStateChanged, getFirestore } = FB;
+
+    const app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+
+    onAuthStateChanged(auth, user => {
+        if (!user) {
+            debugLog("Signing in anonymously...");
+            signInAnonymously(auth).catch(e => {
+                debugLog("Auth error: " + e.message);
+                render(`
+                    <div class="screen" style="text-align:center; justify-content:center;">
+                        <h2>FIREBASE ERROR</h2>
+                        <p class="flavor-text">${e.message}</p>
+                        <p style="font-family:var(--font-mono); font-size:0.75rem; color:var(--text-dim);">
+                            Enable Anonymous Auth in your Firebase console.
+                        </p>
+                        <button class="btn btn-secondary" onclick="location.reload()">RETRY</button>
+                    </div>`);
             });
-            if (this.motionBuffer.length > 8) {
-                this.attemptSelfElimination();
-            }
+            return;
         }
-    }
-    
-    handleOrientation(e) {
-        if (!this.active || !aliveFlag || Date.now() < this.graceEnd) return;
-        
-        const beta = e.beta || 0;
-        const gamma = e.gamma || 0;
-        
-        if (myAssassinTrigger === "PHONE_FACE_DOWN" && Math.abs(beta) > 70) {
-            this.attemptSelfElimination();
-        }
-        if (myAssassinTrigger === "TILT_LEFT_RIGHT" && Math.abs(gamma) > 45) {
-            this.attemptSelfElimination();
-        }
-        if (myAssassinTrigger === "PHONE_PICKED_UP" && beta < -20 && Math.abs(gamma) < 30) {
-            this.attemptSelfElimination();
-        }
-    }
-    
-    attemptSelfElimination() {
-        if (!aliveFlag || pendingEliminationModal) return;
-        
-        const cooldownTime = localTriggerCooldown.get(myAssassinTrigger);
-        if (cooldownTime && cooldownTime > Date.now()) return;
-        
-        localTriggerCooldown.set(myAssassinTrigger, Date.now() + 10000);
-        this.showEliminationModal();
-    }
-    
-    showEliminationModal() {
-        pendingEliminationModal = true;
-        
-        const triggerDescription = getTriggerDescription(myAssassinTrigger);
-        
-        const modalDiv = document.createElement("div");
-        modalDiv.className = "modal-full";
-        modalDiv.innerHTML = `
-            <div class="card">
-                <h2>🔪 ELIMINATION DETECTED!</h2>
-                <p>You just performed: <strong style="color:#ff8888;">${triggerDescription}</strong></p>
-                <p>This was your assassin's mission for you!</p>
-                <div class="btn-group">
-                    <button id="confirmYes">✅ I've been eliminated</button>
-                    <button id="confirmNo">❌ This was a mistake</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(modalDiv);
-        
-        document.getElementById("confirmYes")?.addEventListener("click", async function() {
-            await this.confirmElimination(true);
-            modalDiv.remove();
-            pendingEliminationModal = false;
-        }.bind(this));
-        
-        document.getElementById("confirmNo")?.addEventListener("click", function() {
-            modalDiv.remove();
-            pendingEliminationModal = false;
-        });
-    }
-    
-    async confirmElimination(confirmed) {
-        if (!confirmed || !aliveFlag) return;
-        
-        try {
-            await runTransaction(db, async function(transaction) {
-                const victimRef = doc(collection(roomRef, "players"), currentUser.uid);
-                const victimSnap = await transaction.get(victimRef);
-                if (!victimSnap.exists() || victimSnap.data().alive === false) return;
-                
-                // Find who has ME as their target (my assassin)
-                const playersQuery = await getDocs(collection(roomRef, "players"));
-                let assassinId = null;
-                playersQuery.forEach(function(d) {
-                    if (d.data().targetId === currentUser.uid && d.data().alive === true) {
-                        assassinId = d.id;
+
+        currentUser = user;
+        debugLog("Authenticated: " + user.uid);
+
+        const savedName = localStorage.getItem("shadowmark_name");
+        const savedRoom = localStorage.getItem("shadowmark_room");
+
+        if (savedName) {
+            currentPlayerName = savedName;
+            if (savedRoom) {
+                roomCode = savedRoom;
+                const { doc, getFirestore } = FB;
+                roomRef = FB.doc(db, "rooms", savedRoom);
+                // Attempt rejoin
+                FB.getDoc(roomRef).then(snap => {
+                    if (!snap.exists() || snap.data().status === "ended") {
+                        localStorage.removeItem("shadowmark_room");
+                        showHome();
+                    } else if (snap.data().status === "active") {
+                        enterActiveGame();
+                    } else {
+                        goToLobby();
                     }
-                });
-                
-                transaction.update(victimRef, { alive: false });
-                
-                if (assassinId) {
-                    const myTargetId = victimSnap.data().targetId;
-                    const assassinRef = doc(collection(roomRef, "players"), assassinId);
-                    transaction.update(assassinRef, { targetId: myTargetId });
-                }
-                
-                const roomSnap = await transaction.get(roomRef);
-                const newAlive = (roomSnap.data().aliveCount || 0) - 1;
-                transaction.update(roomRef, { aliveCount: newAlive, lastUpdated: serverTimestamp() });
-            });
-        } catch(e) {
-            debugLog("Transaction failed: " + e.message);
+                }).catch(() => showHome());
+            } else {
+                showHome();
+            }
+        } else {
+            showNameInput();
         }
-        
-        aliveFlag = false;
-        if (sensorManager) sensorManager.destroy();
-        showToast("☠️ YOU HAVE BEEN ELIMINATED!");
-    }
-    
-    destroy() {
-        if (this.micInterval) {
-            cancelAnimationFrame(this.micInterval);
-        }
-        window.removeEventListener("devicemotion", this.handleMotion);
-        window.removeEventListener("deviceorientation", this.handleOrientation);
-        if (this.mediaStream) {
-            this.mediaStream.getTracks().forEach(function(t) { t.stop(); });
-        }
-        this.active = false;
-    }
+    });
 }
 
-// Initialize
-debugLog("App starting...");
-
-onAuthStateChanged(auth, function(user) {
-    if (!user) {
-        debugLog("Signing in anonymously...");
-        signInAnonymously(auth).catch(function(e) {
-            debugLog("Auth error: " + e.message);
-            render(`
-                <div class="card" style="text-align:center">
-                    <h2>⚠️ Firebase Error</h2>
-                    <p>${e.message}</p>
-                    <p>Check that Anonymous Auth is enabled in Firebase Console</p>
-                    <button onclick="location.reload()">Retry</button>
-                </div>
-            `);
-        });
-        return;
-    }
-    
-    currentUser = user;
-    debugLog("Logged in: " + user.uid);
-    
-    // Check if user has a name saved
-    const savedName = localStorage.getItem("assassin_name");
-    if (savedName) {
-        currentPlayerName = savedName;
-        showHome();
-    } else {
-        showNameInput();
-    }
+// Wait for Firebase SDK to be injected from HTML module script
+window.addEventListener("firebaseReady", () => {
+    FB = window._firebase;
+    boot();
 });
