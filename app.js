@@ -1211,8 +1211,13 @@ function boot() {
     });
 }
 
-// Wait for Firebase SDK to be injected from HTML module script
-window.addEventListener("firebaseReady", () => {
-    FB = window._firebase;
-    boot();
-});
+// Poll until Firebase module script has finished loading
+function waitForFirebase() {
+    if (window._firebase) {
+        FB = window._firebase;
+        boot();
+    } else {
+        setTimeout(waitForFirebase, 50);
+    }
+}
+waitForFirebase();
