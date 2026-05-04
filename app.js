@@ -316,7 +316,20 @@ function renderLobby() {
 
 function subscribeLobby() {
     if (unsubPlayers) unsubPlayers();
+    if (unsubRoom) unsubRoom();
     const { collection, onSnapshot } = FB;
+
+    // Watch the room document — when host starts the game, all devices transition
+    unsubRoom = onSnapshot(roomRef, snap => {
+        const data = snap.data();
+        if (!data) return;
+        if (data.status === "active" && currentGameStatus !== "active") {
+            debugLog("Room went active — entering game");
+            if (unsubPlayers) { unsubPlayers(); unsubPlayers = null; }
+            if (unsubRoom) { unsubRoom(); unsubRoom = null; }
+            enterActiveGame();
+        }
+    });
 
     unsubPlayers = onSnapshot(collection(roomRef, "players"), snap => {
         const players = [];
