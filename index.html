@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#080808">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <title>SHADOWMARK</title>
     <link rel="stylesheet" href="style.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -12,36 +15,31 @@
 <body>
     <div class="noise-overlay"></div>
     <div class="scanlines"></div>
-
-    <div id="appRoot">
-        <!-- Rendered by JS -->
-    </div>
-
+    <div id="appRoot"></div>
     <div id="toastContainer"></div>
 
-    <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-        import {
-            getAuth, signInAnonymously, onAuthStateChanged
-        } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js";
         import {
             getFirestore, doc, setDoc, getDoc, updateDoc,
             onSnapshot, collection, runTransaction, query,
-            where, getDocs, writeBatch, serverTimestamp, Timestamp
+            where, getDocs, writeBatch, serverTimestamp,
+            Timestamp, arrayUnion
         } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
         window._firebase = {
             initializeApp, getAuth, signInAnonymously, onAuthStateChanged,
             getFirestore, doc, setDoc, getDoc, updateDoc,
             onSnapshot, collection, runTransaction, query,
-            where, getDocs, writeBatch, serverTimestamp, Timestamp
+            where, getDocs, writeBatch, serverTimestamp,
+            Timestamp, arrayUnion
         };
-
-        // Signal that Firebase is ready
-        window.dispatchEvent(new Event('firebaseReady'));
+        window.dispatchEvent(new Event("firebaseReady"));
     </script>
-
     <script src="app.js"></script>
 </body>
 </html>
+
+
+index.html done
